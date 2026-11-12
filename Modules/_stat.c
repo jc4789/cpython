@@ -47,6 +47,11 @@ typedef unsigned short mode_t;
 
 #endif /* MS_WINDOWS */
 
+#ifdef __nocturne__
+/* Python's st_mode (Python/fileutils.c); Nocturne has no file modes */
+typedef unsigned int mode_t;
+#endif
+
 /* From Python's stat.py */
 #ifndef S_IMODE
 #  define S_IMODE 07777

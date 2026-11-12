@@ -24,6 +24,15 @@ extern "C" {
 #  define DELIM L';'
 #endif
 
+#ifdef __nocturne__
+   // Nocturne paths: "C:\a\b", where '/' works as the backslash too, and
+   // the drive's colon keeps ':' out of lists of paths.
+#  define SEP L'\\'
+#  define ALTSEP L'/'
+#  define MAXPATHLEN 4096
+#  define DELIM L';'
+#endif
+
 /* Filename separator */
 #ifndef SEP
 #  define SEP L'/'

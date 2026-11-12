@@ -18,6 +18,10 @@
 #if defined(HAVE_SYS_RESOURCE_H)
 #  include <sys/resource.h>       // getrusage(RUSAGE_SELF)
 #endif
+#ifdef __nocturne__
+#  include "nocturne.h"           // n_app_cpu_ns(), n_clock_after()
+#  include "pycore_signal.h"      // _PyOS_NocturneWait()
+#endif
 #ifdef QUICKWIN
 # include <io.h>
 #endif
@@ -1376,6 +1380,16 @@ py_process_time(time_module_state *state, PyTime_t *tp,
     /* ktime and utime have a resolution of 100 nanoseconds */
     *tp = (ktime + utime) * 100;
     return 0;
+#elif defined(__nocturne__)
+    (void)state;
+    if (info) {
+        info->implementation = "n_app_cpu_ns()";
+        info->resolution = 1e-9;
+        info->monotonic = 1;
+        info->adjustable = 0;
+    }
+    *tp = (PyTime_t)n_app_cpu_ns();
+    return 0;
 #else
 
     /* clock_gettime */
@@ -1827,7 +1841,10 @@ get_zone(char *zone, int n, struct tm *p)
 #ifdef HAVE_STRUCT_TM_TM_ZONE
     strncpy(zone, p->tm_zone ? p->tm_zone : "   ", n);
 #else
+#ifndef __nocturne__
+    /* Nocturne knows no time zone: localtime() is gmtime() (time.h) */
     tzset();
+#endif
     strftime(zone, n, "%Z", p);
 #endif
 }
@@ -2285,7 +2302,31 @@ pysleep(PyTime_t timeout)
 {
     assert(timeout >= 0);
 
-#ifndef MS_WINDOWS
+#ifdef __nocturne__
+    /* The main thread's sleep ends at Ctrl+C (_PyOS_NocturneWait), runs the
+       SIGINT handler and sleeps on to the same deadline unless it raised. */
+    uint64_t deadline = n_clock_after((uint64_t)timeout);
+    if (timeout == 0) {
+        Py_BEGIN_ALLOW_THREADS
+        n_yield();
+        Py_END_ALLOW_THREADS
+        return 0;
+    }
+    for (;;) {
+        int woken;
+        Py_BEGIN_ALLOW_THREADS
+        woken = _PyOS_NocturneWait(-1, 0, NULL, 0, deadline);
+        Py_END_ALLOW_THREADS
+        if (woken < 0) {
+            if (PyErr_CheckSignals()) {
+                return -1;
+            }
+        }
+        if (n_clock_monotonic() >= deadline) {
+            return 0;
+        }
+    }
+#elif !defined(MS_WINDOWS)
 #ifdef HAVE_CLOCK_NANOSLEEP
     struct timespec timeout_abs;
 #elif defined(HAVE_NANOSLEEP)

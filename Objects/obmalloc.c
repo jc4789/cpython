@@ -1,6 +1,7 @@
 /* Python's malloc wrappers (see pymem.h) */
 
 #include "Python.h"
+#include "pycore_fileutils.h"     // _Py_stream_fd()
 #include "pycore_interp.h"        // _PyInterpreterState_HasFeature
 #include "pycore_mmap.h"          // _PyAnnotateMemoryMap()
 #include "pycore_object.h"        // _PyDebugAllocatorStats() definition
@@ -538,6 +539,9 @@ _PyMem_DefaultRawWcsdup(const wchar_t *str)
 #ifdef WITH_PYMALLOC
 #  ifdef MS_WINDOWS
 #    include <windows.h>
+#  elif defined(__nocturne__)
+     // Arenas are pages of native memory (n_memory_reserve).
+#    include "nocturne.h"
 #  elif defined(HAVE_MMAP)
 #    include <sys/mman.h>
 #    ifdef MAP_ANONYMOUS
@@ -644,6 +648,12 @@ _PyMem_ArenaAlloc(void *Py_UNUSED(ctx), size_t size)
 #  endif
     return VirtualAlloc(NULL, size,
                         MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#elif defined(__nocturne__) && defined(WITH_PYMALLOC)
+    void *ptr;
+    if (n_memory_reserve(size, N_MEMORY_READ_WRITE, &ptr) < 0) {
+        return NULL;
+    }
+    return ptr;
 #elif defined(ARENAS_USE_MMAP)
     void *ptr;
 #  ifdef PYMALLOC_USE_HUGEPAGES
@@ -686,7 +696,7 @@ _PyMem_ArenaAlloc(void *Py_UNUSED(ctx), size_t size)
 
 void
 _PyMem_ArenaFree(void *Py_UNUSED(ctx), void *ptr,
-#if defined(ARENAS_USE_MMAP)
+#if defined(ARENAS_USE_MMAP) || (defined(__nocturne__) && defined(WITH_PYMALLOC))
     size_t size
 #else
     size_t Py_UNUSED(size)
@@ -699,6 +709,13 @@ _PyMem_ArenaFree(void *Py_UNUSED(ctx), void *ptr,
         return;
     }
     VirtualFree(ptr, 0, MEM_RELEASE);
+#elif defined(__nocturne__) && defined(WITH_PYMALLOC)
+    if (ptr == NULL) {
+        return;
+    }
+    if (n_memory_release(ptr, size) < 0) {
+        _Py_FatalErrorFormat(__func__, "n_memory_release(%p, %zu) failed", ptr, size);
+    }
 #elif defined(ARENAS_USE_MMAP)
     /* Unlike free(), munmap() does not special-case NULL to noop. */
     if (ptr == NULL) {
@@ -3483,7 +3500,7 @@ _PyObject_DebugDumpAddress(const void *p)
     fputc('\n', stderr);
 
     fflush(stderr);
-    _PyMem_DumpTraceback(fileno(stderr), p);
+    _PyMem_DumpTraceback(_Py_stream_fd(stderr), p);
 }
 
 

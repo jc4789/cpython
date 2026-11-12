@@ -19,6 +19,11 @@
 #ifdef HAVE_FCNTL_H
 #  include <fcntl.h>              // open()
 #endif
+#ifdef __nocturne__
+   // Python's descriptors (Nocturne/descriptors.c)
+#  include "descriptors.h"        // _Py_fd_open(), O_RDONLY
+#  define HAVE_FTRUNCATE
+#endif
 
 #include "_iomodule.h"
 
@@ -136,7 +141,11 @@ internal_close(fileio *self)
         /* fd is accessible and someone else may have closed it */
         Py_BEGIN_ALLOW_THREADS
         _Py_BEGIN_SUPPRESS_IPH
+#ifdef __nocturne__
+        err = _Py_fd_close(fd);
+#else
         err = close(fd);
+#endif
         if (err < 0)
             save_errno = errno;
         _Py_END_SUPPRESS_IPH
@@ -272,7 +281,7 @@ _io_FileIO___init___impl(fileio *self, PyObject *nameobj, const char *mode,
     int fd_is_own = 0;
 #ifdef O_CLOEXEC
     int *atomic_flag_works = &_Py_open_cloexec_works;
-#elif !defined(MS_WINDOWS)
+#elif !defined(MS_WINDOWS) && !defined(__nocturne__)
     int *atomic_flag_works = NULL;
 #endif
     int fstat_result;
@@ -421,6 +430,8 @@ _io_FileIO___init___impl(fileio *self, PyObject *nameobj, const char *mode,
                 Py_BEGIN_ALLOW_THREADS
 #ifdef MS_WINDOWS
                 self->fd = _wopen(widename, flags, 0666);
+#elif defined(__nocturne__)
+                self->fd = _Py_fd_open(name, flags);
 #else
                 self->fd = open(name, flags, 0666);
 #endif
@@ -439,7 +450,7 @@ _io_FileIO___init___impl(fileio *self, PyObject *nameobj, const char *mode,
         else {
             PyObject *fdobj;
 
-#ifndef MS_WINDOWS
+#if !defined(MS_WINDOWS) && !defined(__nocturne__)
             /* the opener may clear the atomic flag */
             atomic_flag_works = NULL;
 #endif
@@ -468,7 +479,7 @@ _io_FileIO___init___impl(fileio *self, PyObject *nameobj, const char *mode,
         }
         fd_is_own = 1;
 
-#ifndef MS_WINDOWS
+#if !defined(MS_WINDOWS) && !defined(__nocturne__)
         if (_Py_set_inheritable(self->fd, 0, atomic_flag_works) < 0)
             goto error;
 #endif
@@ -803,6 +814,8 @@ _io_FileIO_readall_impl(fileio *self, PyTypeObject *cls)
             _Py_BEGIN_SUPPRESS_IPH
 #ifdef MS_WINDOWS
             pos = _lseeki64(self->fd, 0L, SEEK_CUR);
+#elif defined(__nocturne__)
+            pos = _Py_fd_seek(self->fd, 0, SEEK_CUR);
 #else
             pos = lseek(self->fd, 0L, SEEK_CUR);
 #endif
@@ -1007,6 +1020,8 @@ portable_lseek(fileio *self, PyObject *posobj, int whence, bool suppress_pipe_er
     else {
         res = _lseeki64(fd, pos, whence);
     }
+#elif defined(__nocturne__)
+    res = _Py_fd_seek(fd, pos, whence);
 #else
     res = lseek(fd, pos, whence);
 #endif
@@ -1133,6 +1148,8 @@ _io_FileIO_truncate_impl(fileio *self, PyTypeObject *cls, PyObject *posobj)
     errno = 0;
 #ifdef MS_WINDOWS
     ret = _chsize_s(fd, pos);
+#elif defined(__nocturne__)
+    ret = _Py_fd_truncate(fd, pos);
 #else
     ret = ftruncate(fd, pos);
 #endif
@@ -1242,9 +1259,7 @@ _io_FileIO_isatty_impl(fileio *self)
     if (self->fd < 0)
         return err_closed();
     Py_BEGIN_ALLOW_THREADS
-    _Py_BEGIN_SUPPRESS_IPH
-    res = isatty(self->fd);
-    _Py_END_SUPPRESS_IPH
+    res = _Py_isatty(self->fd);
     Py_END_ALLOW_THREADS
     return PyBool_FromLong(res);
 }

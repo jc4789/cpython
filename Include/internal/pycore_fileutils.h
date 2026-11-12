@@ -13,8 +13,9 @@ extern "C" {
 
 
 /* A routine to check if a file descriptor can be select()-ed. */
-#ifdef _MSC_VER
-    /* On Windows, any socket fd can be select()-ed, no matter how high */
+#if defined(_MSC_VER) || defined(__nocturne__)
+    /* On Windows, any socket fd can be select()-ed, no matter how high.
+       Nocturne has no select(): an event queue waits for any handle. */
     #define _PyIsSelectable_fd(FD) (1)
 #else
     #define _PyIsSelectable_fd(FD) ((unsigned int)(FD) < (unsigned int)FD_SETSIZE)
@@ -41,6 +42,13 @@ PyAPI_FUNC(int) _Py_EncodeLocale(
     _Py_error_handler errors);
 
 extern PyObject* _Py_device_encoding(int);
+
+// Whether the descriptor or the C stream reaches a terminal.
+extern int _Py_isatty(int fd);
+extern int _Py_stream_isatty(FILE *stream);
+
+// The descriptor of a C stream (fileno()), or -1 with errno set.
+extern int _Py_stream_fd(FILE *stream);
 
 #if defined(MS_WINDOWS) || defined(__APPLE__)
     /* On Windows, the count parameter of read() is an int (bpo-9015, bpo-9611).
@@ -77,8 +85,34 @@ struct _Py_stat_struct {
     unsigned long st_reparse_tag;
     uint64_t st_ino_high;
 };
+#  define _Py_wstat_struct stat
+#elif defined(__nocturne__)
+/* What Python's stat functions say of an entry of C: or an open handle
+   (Python/fileutils.c). Nocturne has no file modes, links, groups or device
+   numbers: st_mode is S_IFREG or S_IFDIR, readable and writable (the system
+   checks the user when an entry is opened), a channel or a terminal is
+   S_IFIFO or S_IFCHR, st_ino is the entry's id and st_uid the user it belongs
+   to. C: keeps one time, the modified time. */
+struct _Py_stat_struct {
+    uint64_t st_dev;
+    uint64_t st_ino;
+    unsigned int st_mode;
+    int st_nlink;
+    unsigned int st_uid;
+    unsigned int st_gid;
+    unsigned long st_rdev;
+    int64_t st_size;
+    int64_t st_atime;
+    int st_atime_nsec;
+    int64_t st_mtime;
+    int st_mtime_nsec;
+    int64_t st_ctime;
+    int st_ctime_nsec;
+};
+#  define _Py_wstat_struct _Py_stat_struct
 #else
 #  define _Py_stat_struct stat
+#  define _Py_wstat_struct stat
 #endif
 
 // Export for 'mmap' shared extension
@@ -94,7 +128,7 @@ PyAPI_FUNC(int) _Py_fstat_noraise(
 // Export for '_tkinter' shared extension
 PyAPI_FUNC(int) _Py_stat(
     PyObject *path,
-    struct stat *status);
+    struct _Py_wstat_struct *status);
 
 // Export for 'select' shared extension (Solaris newDevPollObject())
 PyAPI_FUNC(int) _Py_open(
@@ -151,6 +185,8 @@ extern wchar_t* _Py_wgetcwd(
        including the trailing NUL character */
     size_t buflen);
 
+#ifndef __nocturne__
+/* Nocturne: a launch passes the handles it is given (Python/fileutils.c) */
 extern int _Py_get_inheritable(int fd);
 
 // Export for '_socket' shared extension
@@ -160,6 +196,7 @@ PyAPI_FUNC(int) _Py_set_inheritable(int fd, int inheritable,
 // Export for '_posixsubprocess' shared extension
 PyAPI_FUNC(int) _Py_set_inheritable_async_safe(int fd, int inheritable,
                                                int *atomic_flag_works);
+#endif
 
 // Export for '_socket' shared extension
 PyAPI_FUNC(int) _Py_dup(int fd);
@@ -211,7 +248,7 @@ extern wchar_t* _Py_DecodeUTF8_surrogateescape(
     size_t *wlen);
 
 extern int
-_Py_wstat(const wchar_t *, struct stat *);
+_Py_wstat(const wchar_t *, struct _Py_wstat_struct *);
 
 extern int _Py_GetForceASCII(void);
 
@@ -299,8 +336,9 @@ extern void _Py_skiproot(const wchar_t *path, Py_ssize_t size, Py_ssize_t *drvsi
 // Export for 'select' shared extension (Argument Clinic code)
 PyAPI_FUNC(int) _PyLong_FileDescriptor_Converter(PyObject *, void *);
 
-#ifdef MS_WINDOWS
-/* Windows uses long long for offsets */
+#if defined(MS_WINDOWS) || defined(__nocturne__)
+/* Windows uses long long for offsets; Nocturne's documents take 64-bit
+   offsets */
 typedef long long Py_off_t;
 #else
 typedef off_t Py_off_t;
@@ -314,7 +352,7 @@ PyAPI_FUNC(char*) _Py_UniversalNewlineFgetsWithSize(char *, int, FILE*, PyObject
 
 extern int _PyFile_Flush(PyObject *);
 
-#ifndef MS_WINDOWS
+#if !defined(MS_WINDOWS) && !defined(__nocturne__)
 extern int _Py_GetTicksPerSecond(long *ticks_per_second);
 #endif
 

@@ -35,6 +35,10 @@
 #include <strings.h>
 #endif
 
+#if defined(__nocturne__)
+#include <string.h>
+#endif
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <limits.h>
@@ -61,6 +65,8 @@ void Lib_Memzero0_memzero0(void *dst, uint64_t len) {
     explicit_bzero(dst, len_);
   #elif defined(__NetBSD__)
     explicit_memset(dst, 0, len_);
+  #elif defined(__nocturne__)
+    memset_explicit(dst, 0, len_);
   #else
     /* Default implementation for platforms with no particular support. */
     #warning "Your platform does not support any safe implementation of memzero -- consider a pull request!"

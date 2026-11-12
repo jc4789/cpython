@@ -3065,7 +3065,7 @@ create_stdio(const PyConfig *config, PyObject* io,
         write_through = Py_True;
     else
         write_through = Py_False;
-    if (buffered_stdio && (isatty || fd == fileno(stderr)))
+    if (buffered_stdio && (isatty || fd == _Py_stream_fd(stderr)))
         line_buffering = Py_True;
     else
         line_buffering = Py_False;
@@ -3194,7 +3194,7 @@ init_sys_streams(PyThreadState *tstate)
        the shell already prevents that. */
 #ifndef MS_WINDOWS
     struct _Py_stat_struct sb;
-    if (_Py_fstat_noraise(fileno(stdin), &sb) == 0 &&
+    if (_Py_fstat_noraise(_Py_stream_fd(stdin), &sb) == 0 &&
         S_ISDIR(sb.st_mode)) {
         return _PyStatus_ERR("<stdin> is a directory, cannot continue");
     }
@@ -3205,7 +3205,7 @@ init_sys_streams(PyThreadState *tstate)
     }
 
     /* Set sys.stdin */
-    fd = fileno(stdin);
+    fd = _Py_stream_fd(stdin);
     /* Under some conditions stdin, stdout and stderr may not be connected
      * and fileno() may point to an invalid file descriptor. For example
      * GUI apps don't have valid standard streams by default.
@@ -3220,7 +3220,7 @@ init_sys_streams(PyThreadState *tstate)
     Py_DECREF(std);
 
     /* Set sys.stdout */
-    fd = fileno(stdout);
+    fd = _Py_stream_fd(stdout);
     std = create_stdio(config, iomod, fd, 1, "<stdout>",
                        config->stdio_encoding,
                        config->stdio_errors);
@@ -3232,7 +3232,7 @@ init_sys_streams(PyThreadState *tstate)
 
 #if 1 /* Disable this if you have trouble debugging bootstrap stuff */
     /* Set sys.stderr, replaces the preliminary stderr */
-    fd = fileno(stderr);
+    fd = _Py_stream_fd(stderr);
     std = create_stdio(config, iomod, fd, 1, "<stderr>",
                        config->stdio_encoding,
                        L"backslashreplace");
@@ -3780,14 +3780,14 @@ fatal_error(int fd, int header, const char *prefix, const char *msg,
 void _Py_NO_RETURN
 Py_FatalError(const char *msg)
 {
-    fatal_error(fileno(stderr), 1, NULL, msg, -1);
+    fatal_error(_Py_stream_fd(stderr), 1, NULL, msg, -1);
 }
 
 
 void _Py_NO_RETURN
 _Py_FatalErrorFunc(const char *func, const char *msg)
 {
-    fatal_error(fileno(stderr), 1, func, msg, -1);
+    fatal_error(_Py_stream_fd(stderr), 1, func, msg, -1);
 }
 
 
@@ -3802,7 +3802,7 @@ _Py_FatalErrorFormat(const char *func, const char *format, ...)
     reentrant = 1;
 
     FILE *stream = stderr;
-    const int fd = fileno(stream);
+    const int fd = _Py_stream_fd(stream);
     PUTS(fd, "Fatal Python error: ");
     if (func) {
         PUTS(fd, func);
@@ -3837,7 +3837,7 @@ Py_ExitStatusException(PyStatus status)
     assert(!_PyStatus_IS_EXIT(status));
 
     if (_PyStatus_IS_ERROR(status)) {
-        fatal_error(fileno(stderr), 1, status.func, status.err_msg, 1);
+        fatal_error(_Py_stream_fd(stderr), 1, status.func, status.err_msg, 1);
     }
     else {
         Py_FatalError("Py_ExitStatusException() must not be called on success");
@@ -3952,7 +3952,7 @@ Py_Exit(int sts)
 int
 Py_FdIsInteractive(FILE *fp, const char *filename)
 {
-    if (isatty(fileno(fp))) {
+    if (_Py_stream_isatty(fp)) {
         return 1;
     }
     if (!_Py_GetConfig()->interactive) {
@@ -3967,7 +3967,7 @@ Py_FdIsInteractive(FILE *fp, const char *filename)
 int
 _Py_FdIsInteractive(FILE *fp, PyObject *filename)
 {
-    if (isatty(fileno(fp))) {
+    if (_Py_stream_isatty(fp)) {
         return 1;
     }
     if (!_Py_GetConfig()->interactive) {

@@ -18,6 +18,9 @@
 #include "pycore_unicodeobject.h"    // _PyUnicode_InternImmortal()
 
 #include "marshal.h"                 // Py_MARSHAL_VERSION
+#ifdef __nocturne__
+#  include "nocturne.h"              // n_document_size()
+#endif
 
 #ifdef __APPLE__
 #  include "TargetConditionals.h"
@@ -1869,18 +1872,24 @@ PyMarshal_ReadLongFromFile(FILE *fp)
 }
 
 /* Return size of file in bytes; < 0 if unknown or INT_MAX if too big */
-static off_t
+static Py_off_t
 getfilesize(FILE *fp)
 {
+#ifdef __nocturne__
+    /* a stream on Nocturne reads a handle, not a Python descriptor */
+    n_result size = n_document_size(n_stream_handle(fp));
+    return size < 0 ? -1 : (Py_off_t)size;
+#else
     struct _Py_stat_struct st;
     if (_Py_fstat_noraise(fileno(fp), &st) != 0)
         return -1;
 #if SIZEOF_OFF_T == 4
     else if (st.st_size >= INT_MAX)
-        return (off_t)INT_MAX;
+        return (Py_off_t)INT_MAX;
 #endif
     else
-        return (off_t)st.st_size;
+        return (Py_off_t)st.st_size;
+#endif
 }
 
 /* If we can get the size of the file up-front, and it's reasonably small,
@@ -1894,7 +1903,7 @@ PyMarshal_ReadLastObjectFromFile(FILE *fp)
 {
 /* REASONABLE_FILE_LIMIT is by defn something big enough for Tkinter.pyc. */
 #define REASONABLE_FILE_LIMIT (1L << 18)
-    off_t filesize;
+    Py_off_t filesize;
     filesize = getfilesize(fp);
     if (filesize > 0 && filesize <= REASONABLE_FILE_LIMIT) {
         char* pBuf = (char *)PyMem_Malloc(filesize);

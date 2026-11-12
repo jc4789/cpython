@@ -15,6 +15,9 @@
 #include "../Parser/tokenizer/tokenizer.h"
 
 #include "osdefs.h"               // SEP
+#ifdef __nocturne__
+#  include "descriptors.h"        // _Py_fd_seek()
+#endif
 #ifdef HAVE_UNISTD_H
 #  include <unistd.h>             // lseek()
 #endif
@@ -531,7 +534,11 @@ display_source_line(PyObject *f, PyObject *filename, int lineno, int indent,
         PyErr_Clear();
     encoding = (found_encoding != NULL) ? found_encoding : "utf-8";
     /* Reset position */
+#ifdef __nocturne__
+    if (_Py_fd_seek(fd, 0, SEEK_SET) < 0) {
+#else
     if (lseek(fd, 0, SEEK_SET) == (off_t)-1) {
+#endif
         Py_DECREF(io);
         Py_DECREF(binary);
         PyMem_Free(found_encoding);

@@ -309,7 +309,7 @@ PyFile_NewStdPrinter(int fd)
 {
     PyStdPrinter_Object *self;
 
-    if (fd != fileno(stdout) && fd != fileno(stderr)) {
+    if (fd != _Py_stream_fd(stdout) && fd != _Py_stream_fd(stderr)) {
         /* not enough infrastructure for PyErr_BadInternalCall() */
         return NULL;
     }
@@ -410,7 +410,7 @@ stdprinter_isatty(PyObject *op, PyObject *Py_UNUSED(ignored))
     }
 
     Py_BEGIN_ALLOW_THREADS
-    res = isatty(self->fd);
+    res = _Py_isatty(self->fd);
     Py_END_ALLOW_THREADS
 
     return PyBool_FromLong(res);

@@ -6,6 +6,7 @@ operating systems.
 """
 
 import io
+import nocturnepath
 import ntpath
 import operator
 import os
@@ -38,8 +39,8 @@ from pathlib._os import (
 
 __all__ = [
     "UnsupportedOperation",
-    "PurePath", "PurePosixPath", "PureWindowsPath",
-    "Path", "PosixPath", "WindowsPath",
+    "PurePath", "PurePosixPath", "PureWindowsPath", "PureNocturnePath",
+    "Path", "PosixPath", "WindowsPath", "NocturnePath",
     ]
 
 
@@ -132,7 +133,12 @@ class PurePath:
         new PurePath object.
         """
         if cls is PurePath:
-            cls = PureWindowsPath if os.name == 'nt' else PurePosixPath
+            if os.name == 'nt':
+                cls = PureWindowsPath
+            elif os.name == 'nocturne':
+                cls = PureNocturnePath
+            else:
+                cls = PurePosixPath
         return object.__new__(cls)
 
     def __init__(self, *args):
@@ -612,6 +618,16 @@ class PureWindowsPath(PurePath):
     __slots__ = ()
 
 
+class PureNocturnePath(PurePath):
+    """PurePath subclass for Nocturne.
+
+    On Nocturne, instantiating a PurePath should return this object.
+    However, you can also instantiate it directly on any system.
+    """
+    parser = nocturnepath
+    __slots__ = ()
+
+
 _STAT_RESULT_ERROR = []  # falsy sentinel indicating stat() failed.
 
 
@@ -628,7 +644,7 @@ class _Info:
         self._lstat_result = None
 
     def __repr__(self):
-        path_type = "WindowsPath" if os.name == "nt" else "PosixPath"
+        path_type = {"nt": "WindowsPath", "nocturne": "NocturnePath"}.get(os.name, "PosixPath")
         return f"<{path_type}.info>"
 
     def _stat(self, *, follow_symlinks=True):
@@ -830,7 +846,12 @@ class Path(PurePath):
 
     def __new__(cls, *args, **kwargs):
         if cls is Path:
-            cls = WindowsPath if os.name == 'nt' else PosixPath
+            if os.name == 'nt':
+                cls = WindowsPath
+            elif os.name == 'nocturne':
+                cls = NocturnePath
+            else:
+                cls = PosixPath
         return object.__new__(cls)
 
     @property
@@ -1486,13 +1507,13 @@ class Path(PurePath):
 
 
 class PosixPath(Path, PurePosixPath):
-    """Path subclass for non-Windows systems.
+    """Path subclass for POSIX systems.
 
     On a POSIX system, instantiating a Path should return this object.
     """
     __slots__ = ()
 
-    if os.name == 'nt':
+    if os.name != 'posix':
         def __new__(cls, *args, **kwargs):
             raise UnsupportedOperation(
                 f"cannot instantiate {cls.__name__!r} on your system")
@@ -1505,6 +1526,19 @@ class WindowsPath(Path, PureWindowsPath):
     __slots__ = ()
 
     if os.name != 'nt':
+        def __new__(cls, *args, **kwargs):
+            raise UnsupportedOperation(
+                f"cannot instantiate {cls.__name__!r} on your system")
+
+
+class NocturnePath(Path, PureNocturnePath):
+    """Path subclass for Nocturne.
+
+    On Nocturne, instantiating a Path should return this object.
+    """
+    __slots__ = ()
+
+    if os.name != 'nocturne':
         def __new__(cls, *args, **kwargs):
             raise UnsupportedOperation(
                 f"cannot instantiate {cls.__name__!r} on your system")

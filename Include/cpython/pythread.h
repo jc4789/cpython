@@ -24,6 +24,10 @@ PyAPI_DATA(const long long) PY_TIMEOUT_MAX;
 #elif defined(HAVE_PTHREAD_STUBS)
 #   include "pthread_stubs.h"
 #   define NATIVE_TSS_KEY_T     pthread_key_t
+#elif defined(__nocturne__)
+    /* Nocturne: ISO C's thread-specific storage (Python/thread_nocturne.h). */
+#   include <threads.h>
+#   define NATIVE_TSS_KEY_T     tss_t
 #else
 #   error "Require native threads. See https://bugs.python.org/issue31370"
 #endif

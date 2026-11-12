@@ -664,6 +664,10 @@ def _getuserbase():
         base = os.environ.get("APPDATA") or "~"
         return joinuser(base, _get_implementation())
 
+    if os.name == "nocturne":
+        # An app's data is in <the user's folder>\AppData\<its name>
+        return joinuser("~", "AppData", _get_implementation())
+
     if sys.platform == "darwin" and sys._framework:
         return joinuser("~", "Library", sys._framework,
                         "%d.%d" % sys.version_info[:2])
@@ -684,6 +688,9 @@ def _get_path(userbase):
     if os.name == 'nt':
         ver_nodot = sys.winver.replace('.', '')
         return f'{userbase}\\{implementation}{ver_nodot}\\site-packages'
+
+    if os.name == 'nocturne':
+        return f'{userbase}\\{implementation}{version[0]}{version[1]}\\site-packages'
 
     if sys.platform == 'darwin' and sys._framework:
         return f'{userbase}/lib/{implementation_lower}/site-packages'
@@ -795,7 +802,7 @@ def setquit():
     The repr of each object contains a hint at how it works.
 
     """
-    if os.sep == '\\':
+    if os.name == 'nt':
         eof = 'Ctrl-Z plus Return'
     else:
         eof = 'Ctrl-D (i.e. EOF)'
@@ -876,7 +883,9 @@ def register_readline():
         return
 
     try:
-        if PYTHON_BASIC_REPL:
+        # Nocturne: libc's n_line_read edits the terminal's lines
+        # (Parser/myreadline.c)
+        if PYTHON_BASIC_REPL or sys.platform == 'nocturne':
             CAN_USE_PYREPL = False
         else:
             original_path = sys.path

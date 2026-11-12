@@ -1078,7 +1078,7 @@ class FrozenImporter:
         try:
             sep = cls._SEP
         except AttributeError:
-            sep = cls._SEP = '\\' if sys.platform == 'win32' else '/'
+            sep = cls._SEP = '\\' if sys.platform in {'win32', 'nocturne'} else '/'
 
         if fullname != alias:
             if fullname.startswith('<'):

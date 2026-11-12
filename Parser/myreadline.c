@@ -24,6 +24,9 @@
 #ifdef HAVE_UNISTD_H
 #  include <unistd.h>             // isatty()
 #endif
+#ifdef __nocturne__
+#  include "descriptors.h"        // _Py_terminal_line()
+#endif
 
 
 // Export the symbol since it's used by the readline shared extension
@@ -258,6 +261,42 @@ exit:
 #endif /* HAVE_WINDOWS_CONSOLE_IO */
 
 
+#ifdef __nocturne__
+/* The longest line the terminal takes. */
+#define NOCTURNE_LINE (64 * 1024)
+
+/* A line the user types at the terminal: libc's n_line_read edits it
+   (Nocturne/descriptors.c). After Ctrl+C, Python's SIGINT handler runs; if it
+   raises, return NULL, and otherwise read the line again. */
+static char *
+nocturne_terminal_readline(PyThreadState *tstate, FILE *sys_stdout, const char *prompt)
+{
+    fflush(sys_stdout);
+    fflush(stderr);
+    for (;;) {
+        char *line = PyMem_RawMalloc(NOCTURNE_LINE);
+        if (line == NULL) {
+            PyEval_RestoreThread(tstate);
+            PyErr_NoMemory();
+            PyEval_SaveThread();
+            return NULL;
+        }
+        Py_ssize_t n = _Py_terminal_line(prompt ? prompt : "", line, NOCTURNE_LINE);
+        if (n >= 0) {
+            line[n] = '\0';
+            return line;
+        }
+        PyMem_RawFree(line);
+        PyEval_RestoreThread(tstate);
+        int s = PyErr_CheckSignals();
+        PyEval_SaveThread();
+        if (s < 0) {
+            return NULL;
+        }
+    }
+}
+#endif
+
 /* Readline implementation using fgets() */
 
 char *
@@ -310,6 +349,12 @@ PyOS_StdioReadline(FILE *sys_stdin, FILE *sys_stdout, const char *prompt)
             clearerr(sys_stdin);
             return _PyOS_WindowsConsoleReadline(tstate, hStdIn);
         }
+    }
+#endif
+
+#ifdef __nocturne__
+    if (sys_stdin == stdin && _Py_stream_isatty(stdin)) {
+        return nocturne_terminal_readline(tstate, sys_stdout, prompt);
     }
 #endif
 
@@ -400,7 +445,7 @@ PyOS_Readline(FILE *sys_stdin, FILE *sys_stdout, const char *prompt)
      * a tty.  This can happen, for example if python is run like
      * this: python -i < test1.py
      */
-    if (!isatty(fileno(sys_stdin)) || !isatty(fileno(sys_stdout)) ||
+    if (!_Py_stream_isatty(sys_stdin) || !_Py_stream_isatty(sys_stdout) ||
         // GH-104668: Don't call global callbacks like PyOS_InputHook or
         // PyOS_ReadlineFunctionPointer from subinterpreters, since it seems
         // like there's no good way for users (like readline and tkinter) to

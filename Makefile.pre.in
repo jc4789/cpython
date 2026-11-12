@@ -1675,6 +1675,7 @@ FROZEN_FILES_IN = \
 		Lib/genericpath.py \
 		Lib/ntpath.py \
 		Lib/posixpath.py \
+		Lib/nocturnepath.py \
 		Lib/os.py \
 		Lib/site.py \
 		Lib/stat.py \
@@ -1702,6 +1703,7 @@ FROZEN_FILES_OUT = \
 		Python/frozen_modules/genericpath.h \
 		Python/frozen_modules/ntpath.h \
 		Python/frozen_modules/posixpath.h \
+		Python/frozen_modules/nocturnepath.h \
 		Python/frozen_modules/os.h \
 		Python/frozen_modules/site.h \
 		Python/frozen_modules/stat.h \
@@ -1765,6 +1767,9 @@ Python/frozen_modules/ntpath.h: Lib/ntpath.py $(FREEZE_MODULE_DEPS)
 
 Python/frozen_modules/posixpath.h: Lib/posixpath.py $(FREEZE_MODULE_DEPS)
 	$(FREEZE_MODULE) posixpath $(srcdir)/Lib/posixpath.py Python/frozen_modules/posixpath.h
+
+Python/frozen_modules/nocturnepath.h: Lib/nocturnepath.py $(FREEZE_MODULE_DEPS)
+	$(FREEZE_MODULE) nocturnepath $(srcdir)/Lib/nocturnepath.py Python/frozen_modules/nocturnepath.h
 
 Python/frozen_modules/os.h: Lib/os.py $(FREEZE_MODULE_DEPS)
 	$(FREEZE_MODULE) os $(srcdir)/Lib/os.py Python/frozen_modules/os.h

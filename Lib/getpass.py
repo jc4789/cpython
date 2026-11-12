@@ -426,6 +426,10 @@ def getuser():
         if user:
             return user
 
+    if os.name == 'nocturne':
+        # the user this app runs for, as the system names it
+        return os.getlogin()
+
     try:
         import pwd
         return pwd.getpwuid(os.getuid()).pw_name

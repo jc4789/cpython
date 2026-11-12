@@ -8,6 +8,9 @@
 #include "reader.h"
 #include "reader_internal.h"
 #include "../lexer/state.h"
+#ifdef __nocturne__
+#  include "descriptors.h"        // _Py_fd_read()
+#endif
 
 #define READER_BUFFER_GROWTH_FACTOR 2
 
@@ -785,6 +788,87 @@ _PyTokenizer_FromFile(FILE *fp, const char *encoding,
     return tok;
 }
 
+char *
+_PyTokenizer_FindEncodingFile(FILE *fp, PyObject *filename)
+{
+    struct tok_state *tok = _PyTokenizer_FromFile(fp, NULL, NULL, NULL);
+    if (tok == NULL) {
+        return NULL;
+    }
+    _Py_DECLARE_STR(anon_string, "<string>");
+    tok->filename = Py_NewRef(filename != NULL ? filename : &_Py_STR(anon_string));
+    char *encoding = NULL;
+    if (initialize_file(tok) == 0) {
+        encoding = tok->encoding;
+        tok->encoding = NULL;
+    }
+    _PyTokenizer_Free(tok);
+    return encoding;
+}
+
+#ifdef __nocturne__
+/* Nocturne: no C stream opens on a Python descriptor (Nocturne/descriptors.c).
+   The first two lines are read into memory, and the descriptor is put back
+   where it was; the string tokenizer looks for the encoding there. */
+char *
+_PyTokenizer_FindEncodingFilename(int fd, PyObject *filename)
+{
+    (void)filename;
+    long long start = _Py_fd_seek(fd, 0, SEEK_CUR);
+    char *text = NULL;
+    size_t size = 0, cap = 0;
+    int lines = 0, failed = 0;
+    while (lines < 2) {
+        if (cap - size < 4096) {
+            cap = cap ? cap * 2 : 8192;
+            char *grown = PyMem_Realloc(text, cap);
+            if (grown == NULL) {
+                PyErr_NoMemory();
+                failed = 1;
+                break;
+            }
+            text = grown;
+        }
+        Py_ssize_t n = _Py_fd_read(fd, text + size, cap - size - 1);
+        if (n < 0) {
+            PyErr_SetFromErrno(PyExc_OSError);
+            failed = 1;
+            break;
+        }
+        if (n == 0) {
+            break;
+        }
+        size_t end = size + (size_t)n;
+        for (; size < end; size++) {
+            if (text[size] == '\n' && ++lines == 2) {
+                size++;
+                break;
+            }
+        }
+    }
+    if (start >= 0) {
+        (void)_Py_fd_seek(fd, start, SEEK_SET);
+    }
+    if (failed) {
+        PyMem_Free(text);
+        return NULL;
+    }
+    if (text == NULL) {
+        return NULL;
+    }
+    text[size] = '\0';
+    struct tok_state *tok = _PyTokenizer_FromString(text, 0, 0);
+    PyMem_Free(text);
+    if (tok == NULL) {
+        return NULL;
+    }
+    char *encoding = tok->encoding;
+    tok->encoding = NULL;
+    _PyTokenizer_Free(tok);
+    return encoding;
+}
+#else
+
 #if defined(__wasi__) || (defined(__EMSCRIPTEN__) && (__EMSCRIPTEN_major__ >= 3))
 /* WASI has no dup(), and Emscripten's emulation is slow. */
 typedef union {
@@ -831,19 +915,8 @@ _PyTokenizer_FindEncodingFilename(int fd, PyObject *filename)
     if (fp == NULL) {
         return NULL;
     }
-    struct tok_state *tok = _PyTokenizer_FromFile(fp, NULL, NULL, NULL);
-    if (tok == NULL) {
-        fclose(fp);
-        return NULL;
-    }
-    _Py_DECLARE_STR(anon_string, "<string>");
-    tok->filename = Py_NewRef(filename != NULL ? filename : &_Py_STR(anon_string));
-    char *encoding = NULL;
-    if (initialize_file(tok) == 0) {
-        encoding = tok->encoding;
-        tok->encoding = NULL;
-    }
+    char *encoding = _PyTokenizer_FindEncodingFile(fp, filename);
     fclose(fp);
-    _PyTokenizer_Free(tok);
     return encoding;
 }
+#endif  /* !__nocturne__ */

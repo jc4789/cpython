@@ -70,6 +70,7 @@ FROZEN = [
         'genericpath',
         'ntpath',
         'posixpath',
+        'nocturnepath',
         'os',
         'site',
         'stat',

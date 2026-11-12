@@ -64,10 +64,10 @@
     <!-- python3t.dll -->
     <Projects Include="python3tdll.vcxproj" />
     <!-- Extension modules -->
-    <ExtensionModules Include="_asyncio;_decimal;_elementtree;_multiprocessing;_overlapped;pyexpat;_queue;_remote_debugging;select;unicodedata;winsound;_uuid;_wmi;_zoneinfo" />
+    <ExtensionModules Include="_asyncio;_elementtree;_multiprocessing;_overlapped;pyexpat;_queue;_remote_debugging;select;unicodedata;winsound;_uuid;_wmi;_zoneinfo" />
     <ExtensionModules Include="_ctypes" Condition="$(IncludeCTypes)" />
     <!-- Extension modules that require external sources -->
-    <ExternalModules Include="_bz2;_lzma;_sqlite3;_zstd" />
+    <ExternalModules Include="_bz2;_decimal;_lzma;_sqlite3;_zstd" />
     <!-- venv launchers -->
     <Projects Include="venvlauncher.vcxproj;venvwlauncher.vcxproj" />
     <!-- _ssl will build _socket as well, which may cause conflicts in parallel builds -->
@@ -77,7 +77,8 @@
     <ExtensionModules Include="@(ExternalModules->'%(Identity)')" Condition="$(IncludeExternals)" />
     <Projects Include="@(ExtensionModules->'%(Identity).vcxproj')" Condition="$(IncludeExtensions)" />
     <!-- Test modules -->
-    <TestModules Include="_ctypes_test;_testbuffer;_testcapi;_testlimitedcapi;_testinternalcapi;_testembed;_testimportmultiple;_testmultiphase;_testsinglephase;_testconsole;_testclinic;_testclinic_limited" />
+    <TestModules Include="_ctypes_test" Condition="$(IncludeCTypes)" />
+    <TestModules Include="_testbuffer;_testcapi;_testlimitedcapi;_testinternalcapi;_testembed;_testimportmultiple;_testmultiphase;_testsinglephase;_testconsole;_testclinic;_testclinic_limited" />
     <TestModules Include="xxlimited" Condition="'$(Configuration)' == 'Release'" />
     <TestModules Include="xxlimited_35" Condition="'$(Configuration)' == 'Release'" />
     <TestModules Include="xxlimited_3_13" Condition="'$(Configuration)' == 'Release'" />

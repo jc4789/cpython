@@ -176,6 +176,10 @@ def _candidate_tempdir_list():
         dirlist.extend([ _os.path.expanduser(r'~\AppData\Local\Temp'),
                          _os.path.expandvars(r'%SYSTEMROOT%\Temp'),
                          r'c:\temp', r'c:\tmp', r'\temp', r'\tmp' ])
+    elif _os.name == 'nocturne':
+        # the temporary folder of the user this app runs for
+        from nocturne import _temp_folder
+        dirlist.append(_temp_folder())
     else:
         dirlist.extend([ '/tmp', '/var/tmp', '/usr/tmp' ])
 
@@ -289,12 +293,15 @@ def _resetflags(path):
 
 def _resetperms(path):
     _resetflags(path)
-    _dont_follow_symlinks(_os.chmod, path, 0o700)
+    # Nocturne has no modes to reset: the system checks the user.
+    if hasattr(_os, 'chmod'):
+        _dont_follow_symlinks(_os.chmod, path, 0o700)
 
 # True if TemporaryDirectory._rmtree() can work relative to open directories
 # instead of resolving paths again.
 _rmtree_use_dir_fd = (
-    {_os.chmod, _os.unlink, _os.lstat} <= _os.supports_dir_fd
+    hasattr(_os, 'chmod')
+    and {_os.chmod, _os.unlink, _os.lstat} <= _os.supports_dir_fd
     and _os.chmod in _os.supports_fd
 )
 

@@ -29,7 +29,7 @@
 # warn(message)     -- print a warning (if enabled)
 
 # ** Values known at compile time **
-# os_name           -- [in] one of 'nt', 'posix', 'darwin'
+# os_name           -- [in] one of 'nt', 'posix', 'darwin', 'nocturne'
 # PREFIX            -- [in] sysconfig.get_config_var(...)
 # EXEC_PREFIX       -- [in] sysconfig.get_config_var(...)
 # PYTHONPATH        -- [in] sysconfig.get_config_var(...)
@@ -196,6 +196,21 @@ elif os_name == 'nt':
     VENV_LANDMARK = 'pyvenv.cfg'
     ZIP_LANDMARK = f'python{VERSION_MAJOR}{VERSION_MINOR}{PYDEBUGEXT or ""}.zip'
     WINREG_KEY = f'SOFTWARE\\Python\\PythonCore\\{PYWINVER}\\PythonPath'
+    DELIM = ';'
+    SEP = '\\'
+
+elif os_name == 'nocturne':
+    # The modules written in C are built into the program (Nocturne/config.c),
+    # so the standard library is the one folder Lib next to it, and there is
+    # no zip of it.
+    BUILDDIR_TXT = 'pybuilddir.txt'
+    DEFAULT_PROGRAM_NAME = 'python'
+    STDLIB_SUBDIR = 'Lib'
+    STDLIB_LANDMARKS = [f'{STDLIB_SUBDIR}\\os.py', f'{STDLIB_SUBDIR}\\os.pyc']
+    PLATSTDLIB_LANDMARK = STDLIB_SUBDIR
+    BUILDSTDLIB_LANDMARKS = ['Lib\\os.py']
+    VENV_LANDMARK = 'pyvenv.cfg'
+    ZIP_LANDMARK = None
     DELIM = ';'
     SEP = '\\'
 
@@ -692,12 +707,15 @@ elif not pythonpath_was_set:
         else:
             library_dir = executable_dir
         stdlib_zip = joinpath(library_dir, ZIP_LANDMARK)
+    elif not ZIP_LANDMARK:
+        stdlib_zip = None
     elif build_prefix:
         # QUIRK: POSIX uses the default prefix when in the build directory
         stdlib_zip = joinpath(PREFIX, ZIP_LANDMARK)
     else:
         stdlib_zip = joinpath(base_prefix, ZIP_LANDMARK)
-    pythonpath.append(stdlib_zip)
+    if stdlib_zip:
+        pythonpath.append(stdlib_zip)
 
     if os_name == 'nt' and use_environment and winreg:
         # QUIRK: Windows also lists paths in the registry. Paths are stored
@@ -752,6 +770,10 @@ elif not pythonpath_was_set:
             # found first. It may be earlier in the order if we found some
             # reason to put it there.
             pythonpath.append(executable_dir)
+    elif os_name == 'nocturne':
+        # Lib is both: the platform's modules are built in
+        if stdlib_dir:
+            pythonpath.append(stdlib_dir)
     else:
         if stdlib_dir:
             pythonpath.append(stdlib_dir)

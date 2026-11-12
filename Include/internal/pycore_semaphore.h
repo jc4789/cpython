@@ -14,6 +14,8 @@
 #       define WIN32_LEAN_AND_MEAN
 #   endif
 #   include <windows.h>
+#elif defined(__nocturne__)
+#   include <stdint.h>            // uint32_t
 #elif defined(HAVE_PTHREAD_H)
 #   include <pthread.h>
 #elif defined(HAVE_PTHREAD_STUBS)
@@ -36,6 +38,9 @@ extern "C" {
 typedef struct _PySemaphore {
 #if defined(MS_WINDOWS)
     HANDLE platform_sem;
+#elif defined(__nocturne__)
+    // the wakeups not taken yet; a wait sleeps on it (wait_on_address)
+    uint32_t count;
 #elif defined(_Py_USE_SEMAPHORES)
     sem_t platform_sem;
 #else

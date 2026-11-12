@@ -177,12 +177,14 @@ extern PyTime_t _PyTime_As100Nanoseconds(PyTime_t t,
     _PyTime_round_t round);
 #endif
 
-#ifndef MS_WINDOWS
+#if !defined(MS_WINDOWS) && !defined(__nocturne__)
 // Create a timestamp from a timeval structure.
 // Raise an exception and return -1 on overflow, return 0 on success.
 extern int _PyTime_FromTimeval(PyTime_t *tp, struct timeval *tv);
 #endif
 
+// Nocturne has no timeval structure.
+#ifndef __nocturne__
 // Convert a timestamp to a timeval structure (microsecond resolution).
 // tv_usec is always positive.
 // Raise an exception and return -1 if the conversion overflowed,
@@ -198,6 +200,7 @@ PyAPI_FUNC(int) _PyTime_AsTimeval(PyTime_t t,
 PyAPI_FUNC(void) _PyTime_AsTimeval_clamp(PyTime_t t,
     struct timeval *tv,
     _PyTime_round_t round);
+#endif
 
 // Convert a timestamp to a number of seconds (secs) and microseconds (us).
 // us is always positive. This function is similar to _PyTime_AsTimeval()

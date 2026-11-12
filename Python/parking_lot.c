@@ -6,6 +6,10 @@
 #include "pycore_pyerrors.h"      // _Py_FatalErrorFormat
 #include "pycore_pystate.h"       // _PyThreadState_GET
 #include "pycore_semaphore.h"     // _PySemaphore
+#ifdef __nocturne__
+#  include "pycore_signal.h"      // _PyOS_NocturneWait()
+#  include "nocturne.h"           // wake_address()
+#endif
 #include "pycore_time.h"          // _PyTime_Add()
 
 #include <stdbool.h>
@@ -65,6 +69,8 @@ _PySemaphore_Init(_PySemaphore *sema)
             "parking_lot: CreateSemaphore failed (error: %u)",
             GetLastError());
     }
+#elif defined(__nocturne__)
+    sema->count = 0;
 #elif defined(_Py_USE_SEMAPHORES)
     if (sem_init(&sema->platform_sem, /*pshared=*/0, /*value=*/0) < 0) {
         Py_FatalError("parking_lot: sem_init failed");
@@ -85,6 +91,8 @@ _PySemaphore_Destroy(_PySemaphore *sema)
 {
 #if defined(MS_WINDOWS)
     CloseHandle(sema->platform_sem);
+#elif defined(__nocturne__)
+    (void)sema;
 #elif defined(_Py_USE_SEMAPHORES)
     sem_destroy(&sema->platform_sem);
 #else
@@ -145,6 +153,30 @@ _PySemaphore_Wait(_PySemaphore *sema, PyTime_t timeout)
         _Py_FatalErrorFormat(__func__,
             "unexpected error from semaphore: %u (error: %u, handle: %p)",
             wait, GetLastError(), sema->platform_sem);
+    }
+#elif defined(__nocturne__)
+    // As on Windows, a wait of the main thread stops for SIGINT
+    // (_PyOS_NocturneWait).
+    uint64_t deadline = timeout < 0 ? N_CLOCK_NEVER : n_clock_after((uint64_t)timeout);
+    for (;;) {
+        uint32_t count = __atomic_load_n(&sema->count, __ATOMIC_ACQUIRE);
+        if (count > 0) {
+            if (__atomic_compare_exchange_n(&sema->count, &count, count - 1, 0,
+                                            __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+                res = Py_PARK_OK;
+                break;
+            }
+            continue;
+        }
+        int woken = _PyOS_NocturneWait(-1, 0, &sema->count, 0, deadline);
+        if (woken < 0) {
+            res = Py_PARK_INTR;
+            break;
+        }
+        if (woken == 0) {
+            res = Py_PARK_TIMEOUT;
+            break;
+        }
     }
 #elif defined(_Py_USE_SEMAPHORES)
     int err;
@@ -236,6 +268,9 @@ _PySemaphore_Wakeup(_PySemaphore *sema)
             "parking_lot: ReleaseSemaphore failed (error: %u, handle: %p)",
             GetLastError(), sema->platform_sem);
     }
+#elif defined(__nocturne__)
+    __atomic_add_fetch(&sema->count, 1, __ATOMIC_RELEASE);
+    wake_address(&sema->count, 1);
 #elif defined(_Py_USE_SEMAPHORES)
     int err = sem_post(&sema->platform_sem);
     if (err != 0) {

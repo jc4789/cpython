@@ -88,6 +88,20 @@ typedef CONDITION_VARIABLE  PyCOND_T;
 
 #endif /* _PY_EMULATED_WIN_CV */
 
-#endif /* _POSIX_THREADS, NT_THREADS */
+#elif defined(__nocturne__)
+/*
+ * Nocturne: a mutex and a condition variable on address waits
+ * (wait_on_address, nocturne.h); Python/condvar.h has them.
+ */
+#define Py_HAVE_CONDVAR
+
+#include <stdint.h>               // uint32_t
+
+/* 0: unlocked, 1: locked, 2: locked with waiters */
+typedef struct { uint32_t state; } PyMUTEX_T;
+/* counts the signals and broadcasts */
+typedef struct { uint32_t sequence; } PyCOND_T;
+
+#endif /* _POSIX_THREADS, NT_THREADS, __nocturne__ */
 
 #endif /* Py_INTERNAL_CONDVAR_H */

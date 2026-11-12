@@ -1,7 +1,7 @@
 #ifndef __Vec_Intrin_H
 #define __Vec_Intrin_H
 
-#include <sys/types.h>
+#include <stdint.h>
 
 #ifndef HACL_INTRINSICS_SHIMMED
 

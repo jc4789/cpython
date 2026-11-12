@@ -3285,7 +3285,7 @@ _PyObject_AssertFailed(PyObject *obj, const char *expr, const char *msg,
         PyTypeObject *type = Py_TYPE(obj);
         const size_t presize = _PyType_PreHeaderSize(type);
         void *ptr = (void *)((char *)obj - presize);
-        _PyMem_DumpTraceback(fileno(stderr), ptr);
+        _PyMem_DumpTraceback(_Py_stream_fd(stderr), ptr);
 
         /* This might succeed or fail, but we're about to abort, so at least
            try to provide any extra info we can: */

@@ -502,8 +502,9 @@ extern "C" {
 #  endif
 #endif
 
-#if defined(__ANDROID__) || defined(__VXWORKS__)
+#if defined(__ANDROID__) || defined(__VXWORKS__) || defined(__nocturne__)
    // Use UTF-8 as the locale encoding, ignore the LC_CTYPE locale.
+   // Nocturne's text is always UTF-8 (its C library has no other locale).
    // See _Py_GetLocaleEncoding(), PyUnicode_DecodeLocale()
    // and PyUnicode_EncodeLocale().
 #  define _Py_FORCE_UTF8_LOCALE

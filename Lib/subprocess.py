@@ -74,6 +74,10 @@ except ModuleNotFoundError:
 else:
     _mswindows = True
 
+# Nocturne launches an app with the handles it is given, and an app never
+# forks (Nocturne/nocturnemodule.c).
+_nocturne = (sys.platform == "nocturne")
+
 # some platforms do not support subprocesses
 _can_fork_exec = sys.platform not in {"emscripten", "wasi", "ios", "tvos", "watchos"}
 
@@ -101,6 +105,8 @@ if _mswindows:
                     "NORMAL_PRIORITY_CLASS", "REALTIME_PRIORITY_CLASS",
                     "CREATE_NO_WINDOW", "DETACHED_PROCESS",
                     "CREATE_DEFAULT_ERROR_MODE", "CREATE_BREAKAWAY_FROM_JOB"])
+elif _nocturne:
+    import nocturne
 else:
     if _can_fork_exec:
         from _posixsubprocess import fork_exec as _fork_exec
@@ -236,6 +242,20 @@ if _mswindows:
             return "%s(%d)" % (self.__class__.__name__, int(self))
 
         __del__ = Close
+elif _nocturne:
+    class _AppHandle(int):
+        """A launched app's handle: it reports the app's end and result."""
+        closed = False
+
+        def Close(self, _handle_close=nocturne._handle_close):
+            if not self.closed:
+                self.closed = True
+                _handle_close(self)
+
+        def __repr__(self):
+            return "%s(%d)" % (self.__class__.__name__, int(self))
+
+        __del__ = Close
 else:
     # When select or poll has indicated that the file is writable,
     # we can write up to _PIPE_BUF bytes without risk of blocking.
@@ -327,7 +347,8 @@ else:
         return (input_offset, True)  # Completed
 
 
-if _mswindows:
+if _mswindows or _nocturne:
+    # Nocturne has no zombie to reap either: an app's handle reports its end.
     # On Windows we just need to close `Popen._handle` when we no longer need
     # it, so that the kernel can free it. `Popen._handle` gets closed
     # implicitly when the `Popen` instance is finalized (see `Handle.__del__`,
@@ -671,8 +692,8 @@ def run(*popenargs,
             stdout, stderr = process.communicate(input, timeout=timeout)
         except TimeoutExpired as exc:
             process.kill()
-            if _mswindows:
-                # Windows accumulates the output in a single blocking
+            if _mswindows or _nocturne:
+                # Windows and Nocturne accumulate the output in a single blocking
                 # read() call run on child threads, with the timeout
                 # being done in a join() on those threads.  communicate()
                 # _after_ kill() is required to collect that and add it
@@ -914,8 +935,8 @@ def _can_use_kqueue():
             kq.close()
 
 
-_CAN_USE_PIDFD_OPEN = not _mswindows and _can_use_pidfd_open()
-_CAN_USE_KQUEUE = not _mswindows and _can_use_kqueue()
+_CAN_USE_PIDFD_OPEN = not (_mswindows or _nocturne) and _can_use_pidfd_open()
+_CAN_USE_KQUEUE = not (_mswindows or _nocturne) and _can_use_kqueue()
 
 # Maximum timeout passed to poll() / kqueue.control() by Popen._wait():
 # very large values (e.g. timeout=float('inf')) overflow the C timestamp
@@ -1029,6 +1050,19 @@ class Popen:
         if _mswindows:
             if preexec_fn is not None:
                 raise ValueError("preexec_fn is not supported on Windows "
+                                 "platforms")
+        elif _nocturne:
+            # An app never forks, and what it gets is what the launch gives
+            # it: its input, output and log streams.
+            if preexec_fn is not None:
+                raise ValueError("preexec_fn is not supported on Nocturne")
+            if pass_fds:
+                raise ValueError("pass_fds is not supported on Nocturne")
+            if startupinfo is not None:
+                raise ValueError("startupinfo is only supported on Windows "
+                                 "platforms")
+            if creationflags != 0:
+                raise ValueError("creationflags is only supported on Windows "
                                  "platforms")
         else:
             # POSIX
@@ -1475,6 +1509,11 @@ class Popen:
                     stack.callback(c2pwrite.Close)
                 if errwrite != -1:
                     stack.callback(errwrite.Close)
+            elif _nocturne:
+                # the descriptors _get_handles made for the child alone
+                for fd in self._child_fds:
+                    stack.callback(os.close, fd)
+                self._child_fds = []
             else:
                 if p2cread != -1 and p2cwrite != -1 and p2cread != devnull_fd:
                     stack.callback(os.close, p2cread)
@@ -1508,6 +1547,85 @@ class Popen:
                 except OSError:
                     pass
             raise
+
+    if _mswindows or _nocturne:
+        #
+        # Windows and Nocturne read and write the pipes with threads
+        #
+        def _readerthread(self, fh, buffer):
+            buffer.append(fh.read())
+            fh.close()
+
+
+        def _writerthread(self, input):
+            self._stdin_write(input)
+
+
+        def _communicate(self, input, endtime, orig_timeout):
+            # Start reader threads feeding into a list hanging off of this
+            # object, unless they've already been started.
+            if self.stdout and not hasattr(self, "_stdout_buff"):
+                self._stdout_buff = []
+                self.stdout_thread = \
+                        threading.Thread(target=self._readerthread,
+                                         args=(self.stdout, self._stdout_buff))
+                self.stdout_thread.daemon = True
+                self.stdout_thread.start()
+            if self.stderr and not hasattr(self, "_stderr_buff"):
+                self._stderr_buff = []
+                self.stderr_thread = \
+                        threading.Thread(target=self._readerthread,
+                                         args=(self.stderr, self._stderr_buff))
+                self.stderr_thread.daemon = True
+                self.stderr_thread.start()
+
+            # Start writer thread to send input to stdin, unless already
+            # started.  The thread writes input and closes stdin when done,
+            # or continues in the background on timeout.
+            if self.stdin and not hasattr(self, "_stdin_thread"):
+                self._stdin_thread = \
+                        threading.Thread(target=self._writerthread,
+                                         args=(input,))
+                self._stdin_thread.daemon = True
+                self._stdin_thread.start()
+
+            # Wait for the writer thread, or time out.  If we time out, the
+            # thread remains writing and the fd left open in case the user
+            # calls communicate again.
+            if hasattr(self, "_stdin_thread"):
+                self._stdin_thread.join(_deadline_remaining(endtime))
+                if self._stdin_thread.is_alive():
+                    raise TimeoutExpired(self.args, orig_timeout)
+
+            # Wait for the reader threads, or time out.  If we time out, the
+            # threads remain reading and the fds left open in case the user
+            # calls communicate again.
+            if self.stdout is not None:
+                self.stdout_thread.join(_deadline_remaining(endtime))
+                if self.stdout_thread.is_alive():
+                    raise TimeoutExpired(self.args, orig_timeout)
+            if self.stderr is not None:
+                self.stderr_thread.join(_deadline_remaining(endtime))
+                if self.stderr_thread.is_alive():
+                    raise TimeoutExpired(self.args, orig_timeout)
+
+            # Collect the output from and close both pipes, now that we know
+            # both have been read successfully.
+            stdout = None
+            stderr = None
+            if self.stdout:
+                stdout = self._stdout_buff
+                self.stdout.close()
+            if self.stderr:
+                stderr = self._stderr_buff
+                self.stderr.close()
+
+            # All data exchanged.  Translate lists into strings.
+            stdout = stdout[0] if stdout else None
+            stderr = stderr[0] if stderr else None
+
+            return (stdout, stderr)
+
 
     if _mswindows:
         #
@@ -1800,80 +1918,6 @@ class Popen:
             return self.returncode
 
 
-        def _readerthread(self, fh, buffer):
-            buffer.append(fh.read())
-            fh.close()
-
-
-        def _writerthread(self, input):
-            self._stdin_write(input)
-
-
-        def _communicate(self, input, endtime, orig_timeout):
-            # Start reader threads feeding into a list hanging off of this
-            # object, unless they've already been started.
-            if self.stdout and not hasattr(self, "_stdout_buff"):
-                self._stdout_buff = []
-                self.stdout_thread = \
-                        threading.Thread(target=self._readerthread,
-                                         args=(self.stdout, self._stdout_buff))
-                self.stdout_thread.daemon = True
-                self.stdout_thread.start()
-            if self.stderr and not hasattr(self, "_stderr_buff"):
-                self._stderr_buff = []
-                self.stderr_thread = \
-                        threading.Thread(target=self._readerthread,
-                                         args=(self.stderr, self._stderr_buff))
-                self.stderr_thread.daemon = True
-                self.stderr_thread.start()
-
-            # Start writer thread to send input to stdin, unless already
-            # started.  The thread writes input and closes stdin when done,
-            # or continues in the background on timeout.
-            if self.stdin and not hasattr(self, "_stdin_thread"):
-                self._stdin_thread = \
-                        threading.Thread(target=self._writerthread,
-                                         args=(input,))
-                self._stdin_thread.daemon = True
-                self._stdin_thread.start()
-
-            # Wait for the writer thread, or time out.  If we time out, the
-            # thread remains writing and the fd left open in case the user
-            # calls communicate again.
-            if hasattr(self, "_stdin_thread"):
-                self._stdin_thread.join(_deadline_remaining(endtime))
-                if self._stdin_thread.is_alive():
-                    raise TimeoutExpired(self.args, orig_timeout)
-
-            # Wait for the reader threads, or time out.  If we time out, the
-            # threads remain reading and the fds left open in case the user
-            # calls communicate again.
-            if self.stdout is not None:
-                self.stdout_thread.join(_deadline_remaining(endtime))
-                if self.stdout_thread.is_alive():
-                    raise TimeoutExpired(self.args, orig_timeout)
-            if self.stderr is not None:
-                self.stderr_thread.join(_deadline_remaining(endtime))
-                if self.stderr_thread.is_alive():
-                    raise TimeoutExpired(self.args, orig_timeout)
-
-            # Collect the output from and close both pipes, now that we know
-            # both have been read successfully.
-            stdout = None
-            stderr = None
-            if self.stdout:
-                stdout = self._stdout_buff
-                self.stdout.close()
-            if self.stderr:
-                stderr = self._stderr_buff
-                self.stderr.close()
-
-            # All data exchanged.  Translate lists into strings.
-            stdout = stdout[0] if stdout else None
-            stderr = stderr[0] if stderr else None
-
-            return (stdout, stderr)
-
         def send_signal(self, sig):
             """Send a signal to the process."""
             # Don't signal a process that we know has already died.
@@ -1902,6 +1946,222 @@ class Popen:
                 if rc == _winapi.STILL_ACTIVE:
                     raise
                 self.returncode = rc
+
+        kill = terminate
+
+    elif _nocturne:
+        #
+        # Nocturne methods
+        #
+        def _standard(self, fd):
+            """This app's standard descriptor fd for the child, or -1 when
+            it is closed."""
+            try:
+                os.fstat(fd)
+            except OSError:
+                return -1
+            return fd
+
+        @staticmethod
+        def _drain(fd):
+            """DEVNULL for output: Nocturne has no null device, so a thread
+            reads the channel to nothing until the child's end closes."""
+            try:
+                while os.read(fd, 65536):
+                    pass
+            finally:
+                os.close(fd)
+
+        def _get_handles(self, stdin, stdout, stderr):
+            """Construct and return tuple with IO objects:
+            p2cread, p2cwrite, c2pread, c2pwrite, errread, errwrite
+            """
+            p2cread, p2cwrite = -1, -1
+            c2pread, c2pwrite = -1, -1
+            errread, errwrite = -1, -1
+            self._child_fds = []
+
+            with self._on_error_fd_closer() as err_close_fds:
+                if stdin is None:
+                    p2cread = self._standard(0)
+                elif stdin == PIPE:
+                    p2cread, p2cwrite = os.pipe()
+                    err_close_fds.extend((p2cread, p2cwrite))
+                    self._child_fds.append(p2cread)
+                elif stdin == DEVNULL:
+                    # a channel whose other end is closed: the child reads
+                    # its end at once
+                    p2cread, unused = os.pipe()
+                    os.close(unused)
+                    err_close_fds.append(p2cread)
+                    self._child_fds.append(p2cread)
+                elif isinstance(stdin, int):
+                    p2cread = stdin
+                else:
+                    # Assuming file-like object
+                    p2cread = stdin.fileno()
+
+                if stdout is None:
+                    c2pwrite = self._standard(1)
+                elif stdout == PIPE:
+                    c2pread, c2pwrite = os.pipe()
+                    err_close_fds.extend((c2pread, c2pwrite))
+                    self._child_fds.append(c2pwrite)
+                elif stdout == DEVNULL:
+                    drained, c2pwrite = os.pipe()
+                    err_close_fds.append(c2pwrite)
+                    self._child_fds.append(c2pwrite)
+                    threading.Thread(target=self._drain, args=(drained,),
+                                     daemon=True).start()
+                elif isinstance(stdout, int):
+                    c2pwrite = stdout
+                else:
+                    # Assuming file-like object
+                    c2pwrite = stdout.fileno()
+
+                if stderr is None:
+                    errwrite = self._standard(2)
+                elif stderr == PIPE:
+                    errread, errwrite = os.pipe()
+                    err_close_fds.extend((errread, errwrite))
+                    self._child_fds.append(errwrite)
+                elif stderr == STDOUT:
+                    errwrite = c2pwrite
+                elif stderr == DEVNULL:
+                    drained, errwrite = os.pipe()
+                    err_close_fds.append(errwrite)
+                    self._child_fds.append(errwrite)
+                    threading.Thread(target=self._drain, args=(drained,),
+                                     daemon=True).start()
+                elif isinstance(stderr, int):
+                    errwrite = stderr
+                else:
+                    # Assuming file-like object
+                    errwrite = stderr.fileno()
+
+            return (p2cread, p2cwrite,
+                    c2pread, c2pwrite,
+                    errread, errwrite)
+
+
+        def _execute_child(self, args, executable, preexec_fn, close_fds,
+                           pass_fds, cwd, env,
+                           startupinfo, creationflags, shell,
+                           p2cread, p2cwrite,
+                           c2pread, c2pwrite,
+                           errread, errwrite,
+                           unused_restore_signals,
+                           unused_gid, unused_gids, unused_uid,
+                           unused_umask,
+                           unused_start_new_session, unused_process_group):
+            """Launch the program (Nocturne version)"""
+            try:
+                if isinstance(args, (str, bytes)):
+                    args = [args]
+                elif isinstance(args, os.PathLike):
+                    if shell:
+                        raise TypeError('path-like args is not allowed when '
+                                        'shell is true')
+                    args = [args]
+                else:
+                    args = list(args)
+
+                if shell:
+                    # The shell runs the command, as sh -c does.
+                    shell_program = executable or nocturne._find_program('sh')
+                    if shell_program is None:
+                        raise FileNotFoundError(errno.ENOENT,
+                                                'shell not found', 'sh')
+                    args = ['sh', '-c'] + args
+                    executable = shell_program
+
+                if executable is None:
+                    executable = args[0]
+                # A bare name is looked for in the system's and the apps'
+                # folders, as the shell does.
+                program = nocturne._find_program(executable)
+                if program is None:
+                    raise FileNotFoundError(errno.ENOENT,
+                                            os.strerror(errno.ENOENT),
+                                            executable)
+
+                if env is not None:
+                    env_list = []
+                    for k, v in env.items():
+                        k = os.fsencode(k)
+                        if b'=' in k:
+                            raise ValueError("illegal environment variable name")
+                        env_list.append(k + b'=' + os.fsencode(v))
+                else:
+                    env_list = None  # this app's environment (os.environ)
+
+                sys.audit("subprocess.Popen", executable, args, cwd, env)
+
+                app, self.pid = nocturne._launch(program, args, env_list,
+                                                 (p2cread, c2pwrite, errwrite),
+                                                 cwd)
+            finally:
+                # The child holds its own copy of each handle it got: this
+                # app closes its copy of what only the child reads or
+                # writes, so a read of the other end sees its end.
+                self._close_pipe_fds(p2cread, p2cwrite,
+                                     c2pread, c2pwrite,
+                                     errread, errwrite)
+
+            self._child_created = True
+            self._handle = _AppHandle(app)
+            # how the app ended (os.app_end), once it has
+            self.app_end = None
+
+
+        def _internal_poll(self, _deadstate=None, _wait=nocturne._wait):
+            """Check if child process has terminated.  Returns returncode
+            attribute.
+
+            This method is called by __del__, so it can only refer to objects
+            in its local scope.
+
+            """
+            if self.returncode is None:
+                end = _wait(self._handle, 0)
+                if end is not None:
+                    self.app_end = end
+                    self.returncode = end.returncode
+            return self.returncode
+
+
+        def _wait(self, timeout):
+            """Internal implementation of wait() on Nocturne."""
+            if self.returncode is None:
+                end = nocturne._wait(self._handle, timeout)
+                if end is None:
+                    raise TimeoutExpired(self.args, timeout)
+                self.app_end = end
+                self.returncode = end.returncode
+            return self.returncode
+
+
+        def send_signal(self, sig):
+            """Send a signal to the process: Nocturne stops an app, and has
+            no other signal for it."""
+            # Don't signal a process that we know has already died.
+            if self.returncode is not None:
+                return
+            if sig in (signal.SIGTERM, signal.SIGINT):
+                self.terminate()
+            else:
+                raise ValueError("Unsupported signal: {}".format(sig))
+
+        def terminate(self):
+            """Stops the app and every app it launched."""
+            # Don't terminate a process that we know has already died.
+            if self.returncode is not None:
+                return
+            try:
+                nocturne._stop(self._handle)
+            except ProcessLookupError:
+                # The app has ended already.
+                self._internal_poll()
 
         kill = terminate
 

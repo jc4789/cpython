@@ -2076,15 +2076,14 @@ _PyErr_ProgramDecodedTextObject(PyObject *filename, int lineno, const char* enco
         return NULL;
     }
     if (encoding == NULL) {
-        int fd = fileno(fp);
-        found_encoding = _PyTokenizer_FindEncodingFilename(fd, filename);
+        found_encoding = _PyTokenizer_FindEncodingFile(fp, filename);
         encoding = found_encoding;
         if (encoding == NULL) {
             PyErr_Clear();
             encoding = "utf-8";
         }
         /* Reset position */
-        if (lseek(fd, 0, SEEK_SET) == (off_t)-1) {
+        if (fseek(fp, 0, SEEK_SET) != 0) {
             fclose(fp);
             PyMem_Free(found_encoding);
             return NULL;

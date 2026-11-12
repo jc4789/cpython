@@ -93,7 +93,8 @@ extern int _PyIO_trap_eintr(void);
    long with "%lld" even when both long and long long have the same
    precision. */
 
-#ifdef MS_WINDOWS
+#if defined(MS_WINDOWS) || defined(__nocturne__)
+/* Windows and Nocturne use long long (Py_off_t) */
 
 # define PyLong_AsOff_t     PyLong_AsLongLong
 # define PyLong_FromOff_t   PyLong_FromLongLong

@@ -23,6 +23,10 @@
 extern int winerror_to_errno(int);
 #endif
 
+#ifdef __nocturne__
+#  include "descriptors.h"        // _Py_fd_read()
+#endif
+
 #ifdef HAVE_LANGINFO_H
 #  include <langinfo.h>           // nl_langinfo(CODESET)
 #endif
@@ -127,9 +131,7 @@ _Py_device_encoding(int fd)
 #else
     int valid;
     Py_BEGIN_ALLOW_THREADS
-    _Py_BEGIN_SUPPRESS_IPH
-    valid = isatty(fd);
-    _Py_END_SUPPRESS_IPH
+    valid = _Py_isatty(fd);
     Py_END_ALLOW_THREADS
     if (!valid) {
         Py_RETURN_NONE;
@@ -1438,6 +1440,8 @@ _Py_fstat_noraise(int fd, struct _Py_stat_struct *status)
 
     _Py_attribute_data_to_stat(&standardInfo, 0, &basicInfo, pIdInfo, status);
     return 0;
+#elif defined(__nocturne__)
+    return _Py_fd_stat(fd, status);
 #else
     return fstat(fd, status);
 #endif
@@ -1482,7 +1486,7 @@ _Py_fstat(int fd, struct _Py_stat_struct *status)
 
 /* Like _Py_stat() but with a raw filename. */
 int
-_Py_wstat(const wchar_t* path, struct stat *buf)
+_Py_wstat(const wchar_t* path, struct _Py_wstat_struct *buf)
 {
     int err;
 #ifdef MS_WINDOWS
@@ -1498,7 +1502,11 @@ _Py_wstat(const wchar_t* path, struct stat *buf)
         errno = EINVAL;
         return -1;
     }
+#ifdef __nocturne__
+    err = _Py_path_stat(fname, buf);
+#else
     err = stat(fname, buf);
+#endif
     PyMem_RawFree(fname);
 #endif
     return err;
@@ -1512,7 +1520,7 @@ _Py_wstat(const wchar_t* path, struct stat *buf)
    raised. */
 
 int
-_Py_stat(PyObject *path, struct stat *statbuf)
+_Py_stat(PyObject *path, struct _Py_wstat_struct *statbuf)
 {
 #ifdef MS_WINDOWS
     int err;
@@ -1537,7 +1545,11 @@ _Py_stat(PyObject *path, struct stat *statbuf)
         return -2;
     }
 
+#ifdef __nocturne__
+    int ret = _Py_path_stat(cpath, statbuf);
+#else
     int ret = stat(cpath, statbuf);
+#endif
     Py_DECREF(bytes);
     assert(ret == 0 || ret == -1);
     return ret;
@@ -1552,6 +1564,10 @@ _Py_stat(PyObject *path, struct stat *statbuf)
 #endif
 #endif
 
+/* Nocturne: no descriptor goes to a launched app. A launch passes the handles
+   it is given (Nocturne/nocturnemodule.c), so there is no inheritance to get
+   or set, and none to clear on what Python opens. */
+#ifndef __nocturne__
 /* This function MUST be kept async-signal-safe on POSIX when raise=0. */
 static int
 get_inheritable(int fd, int raise)
@@ -1766,6 +1782,7 @@ _Py_set_inheritable_async_safe(int fd, int inheritable, int *atomic_flag_works)
 {
     return set_inheritable(fd, inheritable, 0, atomic_flag_works);
 }
+#endif  /* !__nocturne__ */
 
 static int
 _Py_open_impl(const char *pathname, int flags, int gil_held)
@@ -1778,6 +1795,8 @@ _Py_open_impl(const char *pathname, int flags, int gil_held)
 
 #ifdef MS_WINDOWS
     flags |= O_NOINHERIT;
+#elif defined(__nocturne__)
+    (void)atomic_flag_works;
 #elif defined(O_CLOEXEC)
     atomic_flag_works = &_Py_open_cloexec_works;
     flags |= O_CLOEXEC;
@@ -1797,7 +1816,11 @@ _Py_open_impl(const char *pathname, int flags, int gil_held)
 
         do {
             Py_BEGIN_ALLOW_THREADS
+#ifdef __nocturne__
+            fd = _Py_fd_open(pathname, flags);
+#else
             fd = open(pathname, flags);
+#endif
             Py_END_ALLOW_THREADS
         } while (fd < 0
                  && errno == EINTR && !(async_err = PyErr_CheckSignals()));
@@ -1813,12 +1836,16 @@ _Py_open_impl(const char *pathname, int flags, int gil_held)
         Py_DECREF(pathname_obj);
     }
     else {
+#ifdef __nocturne__
+        fd = _Py_fd_open(pathname, flags);
+#else
         fd = open(pathname, flags);
+#endif
         if (fd < 0)
             return -1;
     }
 
-#ifndef MS_WINDOWS
+#if !defined(MS_WINDOWS) && !defined(__nocturne__)
     if (set_inheritable(fd, 0, gil_held, atomic_flag_works) < 0) {
         close(fd);
         return -1;
@@ -1891,10 +1918,12 @@ _Py_wfopen(const wchar_t *path, const wchar_t *mode)
 #endif
     if (f == NULL)
         return NULL;
+#ifndef __nocturne__
     if (make_non_inheritable(fileno(f)) < 0) {
         fclose(f);
         return NULL;
     }
+#endif
     return f;
 }
 
@@ -1984,10 +2013,12 @@ Py_fopen(PyObject *path, const char *mode)
         return NULL;
     }
 
+#ifndef __nocturne__
     if (set_inheritable(fileno(f), 0, 1, NULL) < 0) {
         fclose(f);
         return NULL;
     }
+#endif
     return f;
 }
 
@@ -2049,6 +2080,8 @@ _Py_read(int fd, void *buf, size_t count)
                 errno = EAGAIN;
             }
         }
+#elif defined(__nocturne__)
+        n = _Py_fd_read(fd, buf, count);
 #else
         n = read(fd, buf, count);
 #endif
@@ -2125,6 +2158,8 @@ _Py_write_impl(int fd, const void *buf, size_t count, int gil_held)
                 errno = EAGAIN;
                 c /= 2;
             } while (c > 0);
+#elif defined(__nocturne__)
+            n = _Py_fd_write(fd, buf, count);
 #else
             n = write(fd, buf, count);
 #endif
@@ -2151,6 +2186,8 @@ _Py_write_impl(int fd, const void *buf, size_t count, int gil_held)
                 errno = EAGAIN;
                 c /= 2;
             } while (c > 0);
+#elif defined(__nocturne__)
+            n = _Py_fd_write(fd, buf, count);
 #else
             n = write(fd, buf, count);
 #endif
@@ -2325,6 +2362,12 @@ _Py_isabs(const wchar_t *path)
         return 0;
     }
     return 1;
+#elif defined(__nocturne__)
+    // n_path_is_complete(): "C:\...", "\..." or "/..."; "C:a" is in the
+    // current folder.
+    Py_ssize_t drive, root;
+    _Py_skiproot(path, -1, &drive, &root);
+    return root != 0;
 #else
     return (path[0] == SEP);
 #endif
@@ -2358,6 +2401,12 @@ _Py_abspath(const wchar_t *path, wchar_t **abspath_p)
 #ifdef MS_WINDOWS
     return _PyOS_getfullpathname(path, abspath_p);
 #else
+#ifdef __nocturne__
+    // "C:a" is "a" in the current folder: there is one drive.
+    Py_ssize_t drive, root;
+    _Py_skiproot(path, -1, &drive, &root);
+    path += drive;
+#endif
     wchar_t cwd[MAXPATHLEN + 1];
     cwd[Py_ARRAY_LENGTH(cwd) - 1] = 0;
     if (!_Py_wgetcwd(cwd, Py_ARRAY_LENGTH(cwd) - 1)) {
@@ -2466,7 +2515,23 @@ _Py_skiproot(const wchar_t *path, Py_ssize_t size, Py_ssize_t *drvsize,
 {
     assert(drvsize);
     assert(rootsize);
-#ifndef MS_WINDOWS
+#ifdef __nocturne__
+    // A Nocturne path: an optional drive ("C:"), then a root separator when
+    // it is complete. There are no shares or devices: "\\a" is the root and
+    // an empty name.
+    const wchar_t *pEnd = size >= 0 ? &path[size] : NULL;
+#define IS_END(x) (pEnd ? (x) == pEnd : !*(x))
+#define IS_SEP(x) (*(x) == SEP || *(x) == ALTSEP)
+    *drvsize = 0;
+    if (!IS_END(&path[0]) && !IS_END(&path[1]) && path[1] == L':'
+        && ((path[0] >= L'a' && path[0] <= L'z') || (path[0] >= L'A' && path[0] <= L'Z')))
+    {
+        *drvsize = 2;
+    }
+    *rootsize = !IS_END(&path[*drvsize]) && IS_SEP(&path[*drvsize]);
+#undef IS_SEP
+#undef IS_END
+#elif !defined(MS_WINDOWS)
 #define IS_SEP(x) (*(x) == SEP)
     *drvsize = 0;
     if (!IS_SEP(&path[0])) {
@@ -2565,6 +2630,12 @@ join_relfile(wchar_t *buffer, size_t bufsize,
     }
 #else
     assert(!_Py_isabs(relfile));
+#ifdef __nocturne__
+    // "C:a" is "a": the drive of a relative name says nothing.
+    Py_ssize_t drive, root;
+    _Py_skiproot(relfile, -1, &drive, &root);
+    relfile += drive;
+#endif
     size_t dirlen = wcslen(dirname);
     size_t rellen = wcslen(relfile);
     size_t maxlen = bufsize - 1;
@@ -2580,7 +2651,11 @@ join_relfile(wchar_t *buffer, size_t bufsize,
             wcscpy(buffer, dirname);
         }
         size_t relstart = dirlen;
+#ifdef ALTSEP
+        if (dirlen > 1 && dirname[dirlen - 1] != SEP && dirname[dirlen - 1] != ALTSEP) {
+#else
         if (dirlen > 1 && dirname[dirlen - 1] != SEP) {
+#endif
             buffer[dirlen] = SEP;
             relstart += 1;
         }
@@ -2787,12 +2862,16 @@ _Py_wgetcwd(wchar_t *buf, size_t buflen)
     int ibuflen = (int)Py_MIN(buflen, INT_MAX);
     return _wgetcwd(buf, ibuflen);
 #else
-    char fname[MAXPATHLEN];
     wchar_t *wname;
     size_t len;
 
+#ifdef __nocturne__
+    const char *fname = n_folder();
+#else
+    char fname[MAXPATHLEN];
     if (getcwd(fname, Py_ARRAY_LENGTH(fname)) == NULL)
         return NULL;
+#endif
     wname = Py_DecodeLocale(fname, &len);
     if (wname == NULL)
         return NULL;
@@ -2842,6 +2921,12 @@ _Py_dup(int fd)
         _Py_END_SUPPRESS_IPH
         return -1;
     }
+#elif defined(__nocturne__)
+    fd = _Py_fd_dup(fd);
+    if (fd < 0) {
+        PyErr_SetFromErrno(PyExc_OSError);
+        return -1;
+    }
 #elif defined(HAVE_FCNTL_H) && defined(F_DUPFD_CLOEXEC)
     Py_BEGIN_ALLOW_THREADS
     _Py_BEGIN_SUPPRESS_IPH
@@ -2878,7 +2963,29 @@ _Py_dup(int fd)
     return fd;
 }
 
-#ifndef MS_WINDOWS
+#ifdef __nocturne__
+/* Whether a read of the descriptor waits (Nocturne/descriptors.c): 1 or 0, or
+   raise an exception and return -1. */
+int
+_Py_get_blocking(int fd)
+{
+    int blocking = _Py_fd_get_blocking(fd);
+    if (blocking < 0) {
+        PyErr_SetFromErrno(PyExc_OSError);
+    }
+    return blocking;
+}
+
+int
+_Py_set_blocking(int fd, int blocking)
+{
+    if (_Py_fd_set_blocking(fd, blocking) < 0) {
+        PyErr_SetFromErrno(PyExc_OSError);
+        return -1;
+    }
+    return 0;
+}
+#elif !defined(MS_WINDOWS)
 /* Get the blocking mode of the file descriptor.
    Return 0 if the O_NONBLOCK flag is set, 1 if the flag is cleared,
    raise an exception and return -1 on error. */
@@ -3195,6 +3302,9 @@ void
 _Py_closerange(int first, int last)
 {
     first = Py_MAX(first, 0);
+#ifdef __nocturne__
+    _Py_fd_close_range(first, last);
+#else
     _Py_BEGIN_SUPPRESS_IPH
 #ifdef HAVE_CLOSE_RANGE
     if (close_range(first, last, 0) == 0) {
@@ -3228,10 +3338,11 @@ _Py_closerange(int first, int last)
     }
 #endif /* USE_FDWALK */
     _Py_END_SUPPRESS_IPH
+#endif /* !__nocturne__ */
 }
 
 
-#ifndef MS_WINDOWS
+#if !defined(MS_WINDOWS) && !defined(__nocturne__)
 // Ticks per second used by clock() and times() functions.
 // See os.times() and time.process_time() implementations.
 int
@@ -3297,6 +3408,8 @@ _Py_IsValidFD(int fd)
     _Py_END_SUPPRESS_IPH
     return (hfile != INVALID_HANDLE_VALUE
             && GetFileType(hfile) != FILE_TYPE_UNKNOWN);
+#elif defined(__nocturne__)
+    return _Py_fd_handle(fd) >= 0;
 #else
     struct stat st;
     return (fstat(fd, &st) == 0);
@@ -3394,5 +3507,53 @@ _Py_strerror(int code)
         return NULL;
     }
     return PyUnicode_DecodeLocale(message, errors);
+#endif
+}
+
+
+/* Whether the descriptor reaches a terminal. */
+int
+_Py_isatty(int fd)
+{
+#ifdef __nocturne__
+    return _Py_fd_isatty(fd) > 0;
+#else
+    int tty;
+    _Py_BEGIN_SUPPRESS_IPH
+    tty = isatty(fd);
+    _Py_END_SUPPRESS_IPH
+    return tty;
+#endif
+}
+
+/* The descriptor of a C stream. On Nocturne only the standard streams have
+   one: stdin, stdout and stderr read and write the app's input, output and
+   log streams (n_input, n_output, n_log), which are Python's descriptors 0, 1
+   and 2 (Nocturne/descriptors.c). */
+int
+_Py_stream_fd(FILE *stream)
+{
+#ifdef __nocturne__
+    const n_handle standard[3] = {n_input(), n_output(), n_log()};
+    int fd = stream == stdin ? 0 : stream == stdout ? 1 : stream == stderr ? 2 : -1;
+    n_handle h = n_stream_handle(stream);
+    if (fd >= 0 && h >= 0 && h == standard[fd]) {
+        return fd;
+    }
+    errno = EBADF;
+    return -1;
+#else
+    return fileno(stream);
+#endif
+}
+
+/* Whether the C stream reaches a terminal. */
+int
+_Py_stream_isatty(FILE *stream)
+{
+#ifdef __nocturne__
+    return n_terminal(n_stream_handle(stream));
+#else
+    return _Py_isatty(fileno(stream));
 #endif
 }

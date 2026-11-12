@@ -105,7 +105,9 @@ struct tok_state *_PyTokenizer_FromReadline(
 struct tok_state *_PyTokenizer_FromFile(
     FILE *fp, const char *encoding, const char *ps1, const char *ps2);
 /* Return the declared encoding in PyMem-allocated storage, or NULL.
-   An exception is set on error. */
+   An exception is set on error. The File form reads the first lines of the
+   stream, which the caller rewinds. */
 char *_PyTokenizer_FindEncodingFilename(int, PyObject *);
+char *_PyTokenizer_FindEncodingFile(FILE *, PyObject *);
 
 #endif /* !Py_TOKENIZER_H */

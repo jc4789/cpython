@@ -110,6 +110,8 @@
 
 #ifdef _WIN32
 #  define getpid GetCurrentProcessId
+#elif defined(__nocturne__)
+#  include "nocturne.h" /* n_random(), n_clock_wall() */
 #else
 #  include <sys/time.h>  /* gettimeofday() */
 #  include <sys/types.h> /* getpid() */
@@ -1070,6 +1072,9 @@ gather_time_entropy(void) {
   FILETIME ft;
   GetSystemTimeAsFileTime(&ft); /* never fails */
   return ft.dwHighDateTime ^ ft.dwLowDateTime;
+#  elif defined(__nocturne__)
+  /* Microseconds time is <20 bits entropy */
+  return (unsigned long)(n_clock_wall() / 1000 % 1000000);
 #  else
   struct timeval tv;
   int gettimeofday_res;
@@ -1127,6 +1132,11 @@ generate_hash_secret_salt(void) {
   if (writeRandomBytes_getrandom_nonblock(&entropy, sizeof(entropy))) {
     return ENTROPY_DEBUG("getrandom", entropy);
   }
+#  elif defined(__nocturne__)
+  /* the system's entropy pool */
+  if (n_random(&entropy, sizeof(entropy)) >= 0) {
+    return ENTROPY_DEBUG("n_random", entropy);
+  }
 #  endif
 #  if ! defined(_WIN32) && defined(XML_DEV_URANDOM)
   if (writeRandomBytes_dev_urandom(&entropy, sizeof(entropy))) {
@@ -1137,7 +1147,7 @@ generate_hash_secret_salt(void) {
 
   entropy.k[0] = 0;
   entropy.k[1] = gather_time_entropy();
-#  if ! defined(__wasi__)
+#  if ! defined(__wasi__) && ! defined(__nocturne__)
   /* Process ID is 0 bits entropy if attacker has local access */
   entropy.k[1] ^= getpid();
 #  endif

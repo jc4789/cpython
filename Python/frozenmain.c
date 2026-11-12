@@ -81,7 +81,7 @@ Py_FrozenMain(int argc, char **argv)
         sts = 0;
     }
 
-    if (inspect && isatty((int)fileno(stdin))) {
+    if (inspect && _Py_stream_isatty(stdin)) {
         sts = PyRun_AnyFile(stdin, "<stdin>") != 0;
     }
 

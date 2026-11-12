@@ -30,6 +30,8 @@ PyAPI_FUNC(void) _Py_RestoreSignals(void);
 #  define Py_NSIG (_SIGMAX + 1)    // QNX
 #elif defined(SIGMAX)
 #  define Py_NSIG (SIGMAX + 1)     // djgpp
+#elif defined(__nocturne__)
+#  define Py_NSIG (SIGTERM + 1)    // ISO C's signals, 1 to SIGTERM
 #else
 #  define Py_NSIG 64               // Use a reasonable default value
 #endif
@@ -100,6 +102,50 @@ PyAPI_FUNC(int) _PyOS_IsMainThread(void);
 // <windows.h> is not included by Python.h so use void* instead of HANDLE.
 // Export for '_multiprocessing' shared extension
 PyAPI_FUNC(void*) _PyOS_SigintEvent(void);
+#endif
+
+#ifdef __nocturne__
+// Nocturne's Ctrl+C (Modules/signalmodule.c): the terminal sends a message
+// for each one on the n_interrupts channel, and a thread of the interpreter
+// delivers it as SIGINT. A wait of the main thread stops for it, as a wait
+// on Windows's _PyOS_SigintEvent() does.
+
+// Whether the calling thread's waits stop for SIGINT: the main thread, while
+// a terminal sends Ctrl+C.
+extern int _PyOS_NocturneInterruptible(void);
+
+// On an interruptible thread: wait until handle h (-1: none) reports one of
+// interest (N_EVENT_*), the word at address (NULL: none) holds another value
+// than expected, the monotonic clock reaches deadline (N_CLOCK_NEVER: never),
+// or SIGINT is delivered. 1: the handle or the word, 0: the deadline,
+// -1: SIGINT. Another thread waits for the handle or the word in the same
+// way, without SIGINT.
+extern int _PyOS_NocturneWait(int h, unsigned int interest,
+                              volatile unsigned int *address,
+                              unsigned int expected,
+                              unsigned long long deadline);
+
+// On an interruptible thread: n_events_wait on the caller's queue, or until
+// SIGINT is delivered: the count of the queue's own events, or -1 for SIGINT.
+// The wait uses the token _PY_NOCTURNE_SIGINT_TOKEN of the queue. Another
+// thread just waits.
+#define _PY_NOCTURNE_SIGINT_TOKEN (~0ULL)
+struct n_event;
+extern long _PyOS_NocturneWaitEvents(int queue, struct n_event *events,
+                                     unsigned long max,
+                                     unsigned long long deadline);
+
+// 網の呼出し（net_resolve など）の cancel に渡す channel の端を *cancel に書く。
+// 待ちが SIGINT で止まるスレッドでは、SIGINT がその相手を閉じ、待ちは
+// N_ERR_CANCELLED で終わる。ほかのスレッドは -1（取り消し無し）。0 か、errno
+// つきの -1（SIGINT がもう来ていれば EINTR）。
+extern int _PyOS_NocturneNetCancel(int *cancel);
+
+// While the libc's n_line_read reads a terminal line it takes Ctrl+C itself:
+// the interpreter's thread keeps off the channel between Pause and Resume.
+// Pause returns once that thread has delivered what it took before.
+extern void _PyOS_NocturneInterruptsPause(void);
+extern void _PyOS_NocturneInterruptsResume(void);
 #endif
 
 #ifdef __cplusplus

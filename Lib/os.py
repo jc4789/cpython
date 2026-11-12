@@ -1,9 +1,9 @@
-r"""OS routines for NT or Posix depending on what system we're on.
+r"""OS routines for NT, Posix or Nocturne depending on what system we're on.
 
 This exports:
-  - all functions from posix or nt, e.g. unlink, stat, etc.
-  - os.path is either posixpath or ntpath
-  - os.name is either 'posix' or 'nt'
+  - all functions from posix, nt or nocturne, e.g. unlink, stat, etc.
+  - os.path is posixpath, ntpath or nocturnepath
+  - os.name is 'posix', 'nt' or 'nocturne'
   - os.curdir is a string representing the current directory (always '.')
   - os.pardir is a string representing the parent directory (always '..')
   - os.sep is the (or a most common) pathname separator ('/' or '\\')
@@ -102,12 +102,31 @@ elif 'nt' in _names:
     except ImportError:
         pass
 
+elif 'nocturne' in _names:
+    name = 'nocturne'
+    linesep = '\n'
+    from nocturne import *
+    from nocturne import _exit
+    __all__.append('_exit')
+    import nocturnepath as path
+
+    import nocturne
+    __all__.extend(_get_exports_list(nocturne))
+    del nocturne
+
+    from nocturne import _have_functions
+
 else:
     raise ImportError('no os specific module found')
 
 sys.modules['os.path'] = path
-from os.path import (curdir, pardir, sep, pathsep, defpath, extsep, altsep,
-    devnull)
+from os.path import (curdir, pardir, sep, pathsep, defpath, extsep, altsep)
+if name == 'nocturne':
+    # Nocturne has no null device. subprocess.DEVNULL is a channel whose
+    # other end is closed or read to nothing (Lib/subprocess.py).
+    __all__.remove("devnull")
+else:
+    from os.path import devnull
 
 del _names
 
@@ -584,93 +603,95 @@ if {open, stat} <= supports_dir_fd and {scandir, stat} <= supports_fd:
 
     __all__.append("fwalk")
 
-def execl(file, *args):
-    """execl(file, *args)
+# Nocturne has no exec: an app never replaces its program.
+if _exists("execv"):
+    def execl(file, *args):
+        """execl(file, *args)
 
-    Execute the executable file with argument list args, replacing the
-    current process. """
-    execv(file, args)
+        Execute the executable file with argument list args, replacing the
+        current process. """
+        execv(file, args)
 
-def execle(file, *args):
-    """execle(file, *args, env)
+    def execle(file, *args):
+        """execle(file, *args, env)
 
-    Execute the executable file with argument list args and
-    environment env, replacing the current process. """
-    env = args[-1]
-    execve(file, args[:-1], env)
+        Execute the executable file with argument list args and
+        environment env, replacing the current process. """
+        env = args[-1]
+        execve(file, args[:-1], env)
 
-def execlp(file, *args):
-    """execlp(file, *args)
+    def execlp(file, *args):
+        """execlp(file, *args)
 
-    Execute the executable file (which is searched for along $PATH)
-    with argument list args, replacing the current process. """
-    execvp(file, args)
+        Execute the executable file (which is searched for along $PATH)
+        with argument list args, replacing the current process. """
+        execvp(file, args)
 
-def execlpe(file, *args):
-    """execlpe(file, *args, env)
+    def execlpe(file, *args):
+        """execlpe(file, *args, env)
 
-    Execute the executable file (which is searched for along $PATH)
-    with argument list args and environment env, replacing the current
-    process. """
-    env = args[-1]
-    execvpe(file, args[:-1], env)
+        Execute the executable file (which is searched for along $PATH)
+        with argument list args and environment env, replacing the current
+        process. """
+        env = args[-1]
+        execvpe(file, args[:-1], env)
 
-def execvp(file, args):
-    """execvp(file, args)
+    def execvp(file, args):
+        """execvp(file, args)
 
-    Execute the executable file (which is searched for along $PATH)
-    with argument list args, replacing the current process.
-    args may be a list or tuple of strings. """
-    _execvpe(file, args)
+        Execute the executable file (which is searched for along $PATH)
+        with argument list args, replacing the current process.
+        args may be a list or tuple of strings. """
+        _execvpe(file, args)
 
-def execvpe(file, args, env):
-    """execvpe(file, args, env)
+    def execvpe(file, args, env):
+        """execvpe(file, args, env)
 
-    Execute the executable file (which is searched for along $PATH)
-    with argument list args and environment env, replacing the
-    current process.
-    args may be a list or tuple of strings. """
-    _execvpe(file, args, env)
+        Execute the executable file (which is searched for along $PATH)
+        with argument list args and environment env, replacing the
+        current process.
+        args may be a list or tuple of strings. """
+        _execvpe(file, args, env)
 
-__all__.extend(["execl","execle","execlp","execlpe","execvp","execvpe"])
+    __all__.extend(["execl","execle","execlp","execlpe","execvp","execvpe"])
 
-def _execvpe(file, args, env=None):
-    if env is not None:
-        exec_func = execve
-        argrest = (args, env)
-    else:
-        exec_func = execv
-        argrest = (args,)
-        env = environ
+    def _execvpe(file, args, env=None):
+        if env is not None:
+            exec_func = execve
+            argrest = (args, env)
+        else:
+            exec_func = execv
+            argrest = (args,)
+            env = environ
 
-    file = fspath(file)
-    if path.dirname(file):
-        exec_func(file, *argrest)
-        return
-    saved_exc = None
-    path_list = get_exec_path(env)
-    orig_file = file
-    if name != 'nt':
-        file = fsencode(file)
-        path_list = map(fsencode, path_list)
-    for dir in path_list:
-        fullname = path.join(dir, file)
-        try:
-            exec_func(fullname, *argrest)
-        except (FileNotFoundError, NotADirectoryError) as e:
-            last_exc = e
-        except OSError as e:
-            last_exc = e
-            if saved_exc is None:
-                saved_exc = e
-    if saved_exc is not None:
-        raise saved_exc
-    # At this point, last_exc.filename contains the full path of whatever
-    # directory happened to be last in path_list. Set it to the filename that
-    # was passed in, which is what the caller will expect. This is what
-    # subprocess does too (see err_filename in Popen._execute_child()).
-    last_exc.filename = orig_file
-    raise last_exc
+        file = fspath(file)
+        if path.dirname(file):
+            exec_func(file, *argrest)
+            return
+        saved_exc = None
+        path_list = get_exec_path(env)
+        orig_file = file
+        if name != 'nt':
+            file = fsencode(file)
+            path_list = map(fsencode, path_list)
+        for dir in path_list:
+            fullname = path.join(dir, file)
+            try:
+                exec_func(fullname, *argrest)
+            except (FileNotFoundError, NotADirectoryError) as e:
+                last_exc = e
+            except OSError as e:
+                last_exc = e
+                if saved_exc is None:
+                    saved_exc = e
+        if saved_exc is not None:
+            raise saved_exc
+        # At this point, last_exc.filename contains the full path of whatever
+        # directory happened to be last in path_list. Set it to the filename that
+        # was passed in, which is what the caller will expect. This is what
+        # subprocess does too (see err_filename in Popen._execute_child()).
+        last_exc.filename = orig_file
+        raise last_exc
 
 
 def get_exec_path(env=None):
@@ -1096,10 +1117,10 @@ if sys.platform != 'vxworks':
             returncode = self._proc.wait()
             if returncode == 0:
                 return None
-            if name == 'nt':
-                return returncode
-            else:
+            if name == 'posix':
                 return returncode << 8  # Shift left to match old behavior
+            else:
+                return returncode
         def __enter__(self):
             return self
         def __exit__(self, *args):

@@ -378,6 +378,10 @@ def copymode(src, dst, *, follow_symlinks=True):
     """
     sys.audit("shutil.copymode", src, dst)
 
+    if not hasattr(os, 'chmod'):
+        # Nocturne has no modes to copy: the system checks the user.
+        return
+
     if not follow_symlinks and _islink(src) and os.path.islink(dst):
         if hasattr(os, 'lchmod'):
             stat_func, chmod_func = os.lstat, os.lchmod
@@ -1597,6 +1601,14 @@ def which(cmd, mode=os.F_OK | os.X_OK, path=None):
     if dirname:
         path = [dirname]
     else:
+        if path is None and sys.platform == "nocturne":
+            # The program the shell runs for the name: the system's folder,
+            # then the apps' folders. Nocturne has no PATH.
+            import nocturne
+            found = nocturne._find_program(cmd)
+            if found is not None and _access_check(found, mode):
+                return found
+            return None
         if path is None:
             path = os.environ.get("PATH", None)
             if path is None:

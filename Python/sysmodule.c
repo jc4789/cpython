@@ -2508,7 +2508,7 @@ sys_remote_exec_impl(PyObject *module, int pid, PyObject *script)
         goto error;
     }
     PyMem_Free(debugger_script_path_w);
-#else // MS_WINDOWS
+#elif !defined(__nocturne__)
     if (access(debugger_script_path, F_OK | R_OK) != 0) {
         switch (errno) {
             case ENOENT:
@@ -2647,12 +2647,12 @@ sys__is_gil_enabled_impl(PyObject *module)
 }
 
 
-#ifndef MS_WINDOWS
+#if !defined(MS_WINDOWS) && !defined(__nocturne__)
 static PerfMapState perf_map_state;
 #endif
 
 PyAPI_FUNC(int) PyUnstable_PerfMapState_Init(void) {
-#ifndef MS_WINDOWS
+#if !defined(MS_WINDOWS) && !defined(__nocturne__)
     char filename[100];
     pid_t pid = getpid();
     // Use nofollow flag to prevent symlink attacks.
@@ -2687,7 +2687,7 @@ PyAPI_FUNC(int) PyUnstable_WritePerfMapEntry(
     size_t code_size,
     const char *entry_name
 ) {
-#ifndef MS_WINDOWS
+#if !defined(MS_WINDOWS) && !defined(__nocturne__)
     if (perf_map_state.perf_map == NULL) {
         int ret = PyUnstable_PerfMapState_Init();
         if (ret != 0){
@@ -2703,7 +2703,7 @@ PyAPI_FUNC(int) PyUnstable_WritePerfMapEntry(
 }
 
 PyAPI_FUNC(void) PyUnstable_PerfMapState_Fini(void) {
-#ifndef MS_WINDOWS
+#if !defined(MS_WINDOWS) && !defined(__nocturne__)
     if (perf_map_state.perf_map != NULL) {
         // close the file
         PyThread_acquire_lock(perf_map_state.map_lock, 1);
@@ -2718,7 +2718,7 @@ PyAPI_FUNC(void) PyUnstable_PerfMapState_Fini(void) {
 }
 
 PyAPI_FUNC(int) PyUnstable_CopyPerfMapFile(const char* parent_filename) {
-#ifndef MS_WINDOWS
+#if !defined(MS_WINDOWS) && !defined(__nocturne__)
     if (perf_map_state.perf_map == NULL) {
         int ret = PyUnstable_PerfMapState_Init();
         if (ret != 0) {
@@ -4219,7 +4219,7 @@ err_occurred:
 static PyStatus
 _PySys_SetPreliminaryStderr(PyObject *sysdict)
 {
-    PyObject *pstderr = PyFile_NewStdPrinter(fileno(stderr));
+    PyObject *pstderr = PyFile_NewStdPrinter(_Py_stream_fd(stderr));
     if (pstderr == NULL) {
         goto error;
     }

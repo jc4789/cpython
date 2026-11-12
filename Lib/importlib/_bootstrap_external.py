@@ -31,17 +31,20 @@ import marshal
 
 
 _MS_WINDOWS = (sys.platform == 'win32')
+_NOCTURNE = (sys.platform == 'nocturne')
 if _MS_WINDOWS:
     import nt as _os
     try:
         import winreg
     except ImportError:
         winreg = None
+elif _NOCTURNE:
+    import nocturne as _os
 else:
     import posix as _os
 
 
-if _MS_WINDOWS:
+if _MS_WINDOWS or _NOCTURNE:
     path_separators = ['\\', '/']
 else:
     path_separators = ['/']
@@ -54,7 +57,7 @@ _pathseps_with_colon = {f':{s}' for s in path_separators}
 
 
 # Bootstrap-related code ######################################################
-_CASE_INSENSITIVE_PLATFORMS_STR_KEY = 'win',
+_CASE_INSENSITIVE_PLATFORMS_STR_KEY = 'win', 'nocturne'
 _CASE_INSENSITIVE_PLATFORMS_BYTES_KEY = 'cygwin', 'darwin', 'ios', 'tvos', 'watchos'
 _CASE_INSENSITIVE_PLATFORMS =  (_CASE_INSENSITIVE_PLATFORMS_BYTES_KEY
                                 + _CASE_INSENSITIVE_PLATFORMS_STR_KEY)
@@ -100,7 +103,21 @@ def _unpack_uint16(data):
     return int.from_bytes(data, 'little')
 
 
-if _MS_WINDOWS:
+if _NOCTURNE:
+    def _path_splitroot(path):
+        """The drive and root of a path ('C:\\', '\\', 'C:' or ''), and the rest.
+        Nocturne has one kind of drive, a letter and a colon, and no UNC names."""
+        drive = path[:2] if path[1:2] == ':' and path[:1].isascii() and path[:1].isalpha() else ''
+        rest = path[len(drive):]
+        if rest and rest[0] in path_separators:
+            return drive + rest[0], rest[1:]
+        return drive, rest
+
+elif _MS_WINDOWS:
+    _path_splitroot = _os._path_splitroot
+
+
+if _MS_WINDOWS or _NOCTURNE:
     def _path_join(*path_parts):
         """Replacement for os.path.join()."""
         if not path_parts:
@@ -109,7 +126,7 @@ if _MS_WINDOWS:
             return path_parts[0]
         root = ""
         path = []
-        for new_root, tail in map(_os._path_splitroot, path_parts):
+        for new_root, tail in map(_path_splitroot, path_parts):
             if new_root.startswith(path_sep_tuple) or new_root.endswith(path_sep_tuple):
                 root = new_root.rstrip(path_separators) or root
                 path = [path_sep + tail]
@@ -181,8 +198,13 @@ if _MS_WINDOWS:
         """Replacement for os.path.isabs."""
         if not path:
             return False
-        root = _os._path_splitroot(path)[0].replace('/', '\\')
+        root = _path_splitroot(path)[0].replace('/', '\\')
         return len(root) > 1 and (root.startswith('\\\\') or root.endswith('\\'))
+
+elif _NOCTURNE:
+    def _path_isabs(path):
+        """Replacement for os.path.isabs: a root separator makes a path complete."""
+        return _path_splitroot(path)[0].endswith(path_sep_tuple)
 
 else:
     def _path_isabs(path):

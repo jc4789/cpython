@@ -486,7 +486,7 @@
     <ClCompile Include="..\Modules\arraymodule.c" />
     <ClCompile Include="..\Modules\atexitmodule.c" />
     <ClCompile Include="..\Modules\binascii.c">
-      <PreprocessorDefinitions>USE_ZLIB_CRC32;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="$(IncludeExternals)">USE_ZLIB_CRC32;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <ClCompile Include="..\Modules\cmathmodule.c" />
     <ClCompile Include="..\Modules\_datetimemodule.c" />
@@ -735,7 +735,7 @@
   </ImportGroup>
   <Target Name="_TriggerRegen" BeforeTargets="PrepareForBuild" DependsOnTargets="Regen" />
 
-  <Target Name="_GetBuildInfo" BeforeTargets="PrepareForBuild">
+  <Target Name="_GetBuildInfo" BeforeTargets="PrepareForBuild" Condition="Exists('$(PySourcePath).git')">
     <PropertyGroup>
       <GIT Condition="$(GIT) == ''">git</GIT>
       <_GIT>$(GIT)</_GIT>

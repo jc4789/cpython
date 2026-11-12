@@ -100,8 +100,9 @@ _INSTALL_SCHEMES = {
         },
     }
 
-# For the OS-native venv scheme, we essentially provide an alias:
-if os.name == 'nt':
+# For the OS-native venv scheme, we essentially provide an alias.
+# Nocturne's layout is Windows': the program, Lib and Scripts in one folder.
+if os.name in ('nt', 'nocturne'):
     _INSTALL_SCHEMES['venv'] = _INSTALL_SCHEMES['nt_venv']
 else:
     _INSTALL_SCHEMES['venv'] = _INSTALL_SCHEMES['posix_venv']
@@ -128,6 +129,10 @@ def _getuserbase():
     if os.name == "nt":
         base = os.environ.get("APPDATA") or "~"
         return joinuser(base,  _get_implementation())
+
+    if os.name == "nocturne":
+        # An app's data is in <the user's folder>\AppData\<its name>
+        return joinuser("~", "AppData", _get_implementation())
 
     if sys.platform == "darwin" and sys._framework:
         return joinuser("~", "Library", sys._framework,
@@ -271,14 +276,14 @@ def _expand_vars(scheme, vars):
         vars = vars | {'platlibdir': 'lib'}
 
     for key, value in _INSTALL_SCHEMES[scheme].items():
-        if os.name in ('posix', 'nt'):
+        if os.name in ('posix', 'nt', 'nocturne'):
             value = os.path.expanduser(value)
         res[key] = os.path.normpath(_subst_vars(value, vars))
     return res
 
 
 def _get_preferred_schemes():
-    if os.name == 'nt':
+    if os.name in ('nt', 'nocturne'):
         return {
             'prefix': 'nt',
             'home': 'posix_home',
@@ -422,6 +427,23 @@ def _init_non_posix(vars):
     else:
         vars['TZPATH'] = ''
 
+
+def _init_nocturne(vars):
+    """Initialize the module as appropriate for Nocturne: the program and Lib
+    are in one folder, and the modules written in C are built into the
+    program."""
+    import _sysconfig
+    vars['LIBDEST'] = get_path('stdlib')
+    vars['BINLIBDEST'] = get_path('platstdlib')
+    vars['INCLUDEPY'] = get_path('include')
+    vars.update(_sysconfig.config_vars())
+    vars['ABIFLAGS'] = 't' if vars['Py_GIL_DISABLED'] else ''
+    vars['EXT_SUFFIX'] = ''
+    vars['EXE'] = ''
+    vars['VERSION'] = _PY_VERSION_SHORT
+    vars['BINDIR'] = os.path.dirname(_safe_realpath(sys.executable))
+    vars['TZPATH'] = ''
+
 #
 # public APIs
 #
@@ -551,11 +573,14 @@ def _init_config_vars():
     try:
         _CONFIG_VARS['py_version_nodot_plat'] = sys.winver.replace('.', '')
     except AttributeError:
-        _CONFIG_VARS['py_version_nodot_plat'] = ''
+        # Nocturne's user scheme is Windows' (nt_user)
+        _CONFIG_VARS['py_version_nodot_plat'] = _PY_VERSION_SHORT_NO_DOT if os.name == 'nocturne' else ''
 
     if os.name == 'nt':
         _init_non_posix(_CONFIG_VARS)
         _CONFIG_VARS['VPATH'] = sys._vpath
+    elif os.name == 'nocturne':
+        _init_nocturne(_CONFIG_VARS)
     if _HAS_USER_BASE:
         # Setting 'userbase' is done below the call to the
         # init function to enable using 'get_config_var' in

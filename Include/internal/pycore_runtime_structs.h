@@ -37,12 +37,13 @@ struct _pymem_allocators {
 
 struct pyhash_runtime_state {
     struct {
-#ifndef MS_WINDOWS
+#if !defined(MS_WINDOWS) && !defined(__nocturne__)
         int fd;
         dev_t st_dev;
         ino_t st_ino;
 #else
-    // This is a placeholder so the struct isn't empty on Windows.
+    // This is a placeholder so the struct isn't empty on Windows and on
+    // Nocturne, which take their entropy from the system (n_random).
     int _not_used;
 #endif
     } urandom_cache;

@@ -53,6 +53,7 @@
 #include "frozen_modules/genericpath.h"
 #include "frozen_modules/ntpath.h"
 #include "frozen_modules/posixpath.h"
+#include "frozen_modules/nocturnepath.h"
 #include "frozen_modules/os.h"
 #include "frozen_modules/site.h"
 #include "frozen_modules/stat.h"
@@ -87,6 +88,7 @@ static const struct _frozen stdlib_modules[] = {
     {"genericpath", _Py_M__genericpath, (int)sizeof(_Py_M__genericpath), false},
     {"ntpath", _Py_M__ntpath, (int)sizeof(_Py_M__ntpath), false},
     {"posixpath", _Py_M__posixpath, (int)sizeof(_Py_M__posixpath), false},
+    {"nocturnepath", _Py_M__nocturnepath, (int)sizeof(_Py_M__nocturnepath), false},
     {"os", _Py_M__os, (int)sizeof(_Py_M__os), false},
     {"site", _Py_M__site, (int)sizeof(_Py_M__site), false},
     {"stat", _Py_M__stat, (int)sizeof(_Py_M__stat), false},

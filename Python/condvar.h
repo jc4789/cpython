@@ -310,6 +310,112 @@ PyCOND_BROADCAST(PyCOND_T *cv)
 
 #endif /* _PY_EMULATED_WIN_CV */
 
-#endif /* _POSIX_THREADS, NT_THREADS */
+#elif defined(__nocturne__)
+/*
+ * Nocturne: address waits (docs/nocturne-native-abi.md §5). The mutex is the
+ * three-state one: 0 unlocked, 1 locked, 2 locked with waiters, so that an
+ * unlock without waiters makes no call. A wait on the condition sleeps while
+ * its sequence is the one read under the mutex: a signal or a broadcast in
+ * between changes it, so no wakeup is lost.
+ */
+
+#include "nocturne.h"
+
+Py_LOCAL_INLINE(int)
+PyMUTEX_INIT(PyMUTEX_T *mut)
+{
+    mut->state = 0;
+    return 0;
+}
+
+Py_LOCAL_INLINE(int)
+PyMUTEX_FINI(PyMUTEX_T *mut)
+{
+    return 0;
+}
+
+Py_LOCAL_INLINE(int)
+PyMUTEX_LOCK(PyMUTEX_T *mut)
+{
+    uint32_t state = 0;
+    if (__atomic_compare_exchange_n(&mut->state, &state, 1, 0,
+                                    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        return 0;
+    }
+    if (state != 2) {
+        state = __atomic_exchange_n(&mut->state, 2, __ATOMIC_ACQUIRE);
+    }
+    while (state != 0) {
+        wait_on_address(&mut->state, 2, N_CLOCK_NEVER);
+        state = __atomic_exchange_n(&mut->state, 2, __ATOMIC_ACQUIRE);
+    }
+    return 0;
+}
+
+Py_LOCAL_INLINE(int)
+PyMUTEX_UNLOCK(PyMUTEX_T *mut)
+{
+    if (__atomic_exchange_n(&mut->state, 0, __ATOMIC_RELEASE) == 2) {
+        wake_address(&mut->state, 1);
+    }
+    return 0;
+}
+
+Py_LOCAL_INLINE(int)
+PyCOND_INIT(PyCOND_T *cond)
+{
+    cond->sequence = 0;
+    return 0;
+}
+
+Py_LOCAL_INLINE(int)
+PyCOND_FINI(PyCOND_T *cond)
+{
+    return 0;
+}
+
+Py_LOCAL_INLINE(int)
+PyCOND_SIGNAL(PyCOND_T *cond)
+{
+    __atomic_add_fetch(&cond->sequence, 1, __ATOMIC_RELEASE);
+    wake_address(&cond->sequence, 1);
+    return 0;
+}
+
+Py_LOCAL_INLINE(int)
+PyCOND_BROADCAST(PyCOND_T *cond)
+{
+    __atomic_add_fetch(&cond->sequence, 1, __ATOMIC_RELEASE);
+    wake_address(&cond->sequence, 0);
+    return 0;
+}
+
+/* return 0 when woken (or spuriously), 1 on timeout */
+Py_LOCAL_INLINE(int)
+_PyCOND_WAIT_UNTIL(PyCOND_T *cond, PyMUTEX_T *mut, uint64_t deadline)
+{
+    uint32_t sequence = __atomic_load_n(&cond->sequence, __ATOMIC_ACQUIRE);
+    PyMUTEX_UNLOCK(mut);
+    n_result r = wait_on_address(&cond->sequence, sequence, deadline);
+    PyMUTEX_LOCK(mut);
+    return r == -N_ERR_TIMEOUT;
+}
+
+Py_LOCAL_INLINE(int)
+PyCOND_WAIT(PyCOND_T *cond, PyMUTEX_T *mut)
+{
+    _PyCOND_WAIT_UNTIL(cond, mut, N_CLOCK_NEVER);
+    return 0;
+}
+
+/* return 0 for success, 1 on timeout */
+Py_LOCAL_INLINE(int)
+PyCOND_TIMEDWAIT(PyCOND_T *cond, PyMUTEX_T *mut, long long us)
+{
+    uint64_t ns = us <= 0 ? 0 : (uint64_t)us > UINT64_MAX / 1000 ? UINT64_MAX : (uint64_t)us * 1000;
+    return _PyCOND_WAIT_UNTIL(cond, mut, n_clock_after(ns));
+}
+
+#endif /* _POSIX_THREADS, NT_THREADS, __nocturne__ */
 
 #endif /* _CONDVAR_IMPL_H_ */

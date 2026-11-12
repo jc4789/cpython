@@ -121,7 +121,7 @@ static inline int config_run_code(const PyConfig *config)
 static int
 stdin_is_interactive(const PyConfig *config)
 {
-    return (isatty(fileno(stdin)) || config->interactive);
+    return (_Py_stream_isatty(stdin) || config->interactive);
 }
 
 
@@ -252,7 +252,7 @@ pymain_import_readline(const PyConfig *config)
     if (!config->inspect && config_run_code(config)) {
         return 0;
     }
-    if (!isatty(fileno(stdin))) {
+    if (!_Py_stream_isatty(stdin)) {
         return 0;
     }
 
@@ -461,7 +461,7 @@ pymain_run_file_obj(PyObject *filename, int skip_source_first_line)
     }
 
     struct _Py_stat_struct sb;
-    if (_Py_fstat_noraise(fileno(fp), &sb) == 0 && S_ISDIR(sb.st_mode)) {
+    if (_Py_fstat_noraise(_Py_stream_fd(fp), &sb) == 0 && S_ISDIR(sb.st_mode)) {
         pymain_error_format("%R is a directory, cannot continue",
                             filename);
         fclose(fp);
@@ -615,7 +615,10 @@ _pymain_run_repl(PyConfig *config, int startup)
         goto error;
     }
 
-    if (isatty(fileno(stdin))
+    /* On Nocturne the terminal's line editing is libc's n_line_read, which
+       PyOS_Readline reads lines with (Parser/myreadline.c). */
+#ifndef __nocturne__
+    if (_Py_stream_isatty(stdin)
         && !_Py_GetEnv(config->use_environment, "PYTHON_BASIC_REPL"))
     {
         PyObject *pyrepl = PyImport_ImportModule("_pyrepl");
@@ -631,6 +634,7 @@ _pymain_run_repl(PyConfig *config, int startup)
         }
         PyErr_Clear();
     }
+#endif
 
     PyCompilerFlags cf = _PyCompilerFlags_INIT;
     PyObject *result = NULL;

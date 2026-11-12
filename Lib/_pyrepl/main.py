@@ -9,6 +9,8 @@ FAIL_REASON: str
 try:
     if sys.platform == "win32" and sys.getwindowsversion().build < 10586:
         raise RuntimeError("Windows 10 TH2 or later required")
+    if sys.platform == "nocturne":
+        raise RuntimeError("libc's n_line_read edits the terminal's lines")
     if not os.isatty(sys.stdin.fileno()):
         raise OSError(errno.ENOTTY, "tty required", "stdin")
     from .simple_interact import check

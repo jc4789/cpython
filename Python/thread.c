@@ -24,6 +24,9 @@
    // PyThread_acquire_lock_timed() uses (us * 1000) to convert microseconds
    // to nanoseconds.
 #  define PY_TIMEOUT_MAX_VALUE (LLONG_MAX / 1000)
+#elif defined(__nocturne__)
+   // The wait for a lock takes a deadline in nanoseconds (wait_on_address).
+#  define PY_TIMEOUT_MAX_VALUE (LLONG_MAX / 1000)
 #elif defined (NT_THREADS)
    // WaitForSingleObject() accepts timeout in milliseconds in the range
    // [0; 0xFFFFFFFE] (DWORD type). INFINITE value (0xFFFFFFFF) means no
@@ -67,6 +70,9 @@ PyThread_init_thread(void)
 #elif defined(NT_THREADS)
 #   define PYTHREAD_NAME "nt"
 #   include "thread_nt.h"
+#elif defined(__nocturne__)
+#   define PYTHREAD_NAME "nocturne"
+#   include "thread_nocturne.h"
 #else
 #   error "Require native threads. See https://bugs.python.org/issue31370"
 #endif

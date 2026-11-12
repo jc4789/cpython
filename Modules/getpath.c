@@ -20,6 +20,10 @@
 #  include <mach-o/dyld.h>
 #endif
 
+#ifdef __nocturne__
+#  include "nocturne.h"           // n_program_path()
+#endif
+
 #ifdef HAVE_DLFCN_H
 #  include <dlfcn.h>
 #endif
@@ -206,7 +210,7 @@ getpath_isdir_impl(PyObject *module, const wchar_t *path)
     return (attr != INVALID_FILE_ATTRIBUTES)
            && (attr & FILE_ATTRIBUTE_DIRECTORY);
 #else
-    struct stat st;
+    struct _Py_wstat_struct st;
     return (_Py_wstat(path, &st) == 0) && S_ISDIR(st.st_mode);
 #endif
 }
@@ -236,7 +240,7 @@ getpath_isfile_impl(PyObject *module, PyObject *pathobj)
     return (attr != INVALID_FILE_ATTRIBUTES)
            && !(attr & FILE_ATTRIBUTE_DIRECTORY);
 #else
-    struct stat st;
+    struct _Py_wstat_struct st;
     int res = _Py_stat(pathobj, &st);
     if (res == -2) {
         return -1;
@@ -274,12 +278,18 @@ getpath_isxfile_impl(PyObject *module, PyObject *pathobj)
     PyMem_Free(path);
     return isxfile;
 #else
-    struct stat st;
+    struct _Py_wstat_struct st;
     int res = _Py_stat(pathobj, &st);
     if (res == -2) {
         return -1;
     }
+#ifdef __nocturne__
+    /* Nocturne has no modes: launching a document tells whether it is a
+       program. */
+    return (res == 0) && S_ISREG(st.st_mode);
+#else
     return (res == 0) && S_ISREG(st.st_mode) && (st.st_mode & 0111);
+#endif
 #endif
 }
 
@@ -765,7 +775,9 @@ env_to_dict(PyObject *dict, const char *key, int and_clear)
     if (r && and_clear) {
 #ifdef MS_WINDOWS
         _wputenv_s(wkey, L"");
-#else
+#elif !defined(__nocturne__)
+        /* macOS's launcher sets the one variable cleared; nothing on
+           Nocturne does */
         unsetenv(&key[4]);
 #endif
     }
@@ -816,6 +828,9 @@ progname_to_dict(PyObject *dict, const char *key)
 {
 #ifdef MS_WINDOWS
     return winmodule_to_dict(dict, key, NULL);
+#elif defined(__nocturne__)
+    /* the complete path of the program the system launched */
+    return decode_to_dict(dict, key, n_program_path());
 #elif defined(__APPLE__)
     char *path;
     uint32_t pathLen = 256;
@@ -955,6 +970,8 @@ _PyConfig_InitPathConfig(PyConfig *config, int compute_path_config)
     if (
 #ifdef MS_WINDOWS
         !decode_to_dict(dict, "os_name", "nt") ||
+#elif defined(__nocturne__)
+        !decode_to_dict(dict, "os_name", "nocturne") ||
 #elif defined(__APPLE__)
         !decode_to_dict(dict, "os_name", "darwin") ||
 #else

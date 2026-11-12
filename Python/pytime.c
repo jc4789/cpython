@@ -11,6 +11,9 @@
 #ifdef MS_WINDOWS
 #  include <winsock2.h>           // struct timeval
 #endif
+#ifdef __nocturne__
+#  include "nocturne.h"           // n_clock_wall(), n_clock_monotonic()
+#endif
 
 #if defined(__APPLE__)
 #  include <mach/mach_time.h>     // mach_absolute_time(), mach_timebase_info()
@@ -591,7 +594,7 @@ _PyTime_FromTimespec(PyTime_t *tp, const struct timespec *ts)
 #endif
 
 
-#ifndef MS_WINDOWS
+#if !defined(MS_WINDOWS) && !defined(__nocturne__)
 static int
 pytime_fromtimeval(PyTime_t *tp, struct timeval *tv, int raise_exc)
 {
@@ -859,6 +862,8 @@ pytime_as_timeval(PyTime_t ns, PyTime_t *ptv_sec, int *ptv_usec,
 }
 
 
+/* Nocturne has no timeval: its clocks and waits are in nanoseconds. */
+#ifndef __nocturne__
 static int
 pytime_as_timeval_struct(PyTime_t t, struct timeval *tv,
                          _PyTime_round_t round, int raise_exc)
@@ -898,6 +903,7 @@ _PyTime_AsTimeval_clamp(PyTime_t t, struct timeval *tv, _PyTime_round_t round)
 {
     (void)pytime_as_timeval_struct(t, tv, round, 0);
 }
+#endif  /* !__nocturne__ */
 
 
 int
@@ -981,6 +987,15 @@ py_get_system_clock(PyTime_t *tp, _Py_clock_info_t *info, int raise_exc)
         info->adjustable = 1;
     }
 
+#elif defined(__nocturne__)
+    (void)raise_exc;
+    *tp = n_clock_wall();
+    if (info) {
+        info->implementation = "n_clock_wall()";
+        info->monotonic = 0;
+        info->resolution = 1e-9;
+        info->adjustable = 1;
+    }
 #else   /* MS_WINDOWS */
     int err;
 #if defined(HAVE_CLOCK_GETTIME)
@@ -1215,6 +1230,16 @@ py_get_monotonic_clock(PyTime_t *tp, _Py_clock_info_t *info, int raise_exc)
 
     PyTime_t ns = _PyTimeFraction_Mul(ticks, &_PyRuntime.time.base);
     *tp = ns;
+
+#elif defined(__nocturne__)
+    (void)raise_exc;
+    *tp = (PyTime_t)n_clock_monotonic();
+    if (info) {
+        info->implementation = "n_clock_monotonic()";
+        info->resolution = 1e-9;
+        info->monotonic = 1;
+        info->adjustable = 0;
+    }
 
 #elif defined(__hpux)
     hrtime_t time = gethrtime();

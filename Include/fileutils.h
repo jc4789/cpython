@@ -15,6 +15,15 @@
    // VisualAge C/C++ Failed to Define MountType Field in sys/stat.h.
 #  define S_IFMT 0170000
 #endif
+#ifdef __nocturne__
+   // Nocturne has no file modes: the kind of an entry and Python's st_mode
+   // for it (Python/fileutils.c) use the values Lib/stat.py has.
+#  define S_IFDIR 0040000
+#  define S_IFCHR 0020000
+#  define S_IFREG 0100000
+#  define S_IFIFO 0010000
+#  define S_IFSOCK 0140000
+#endif
 #ifndef S_IFLNK
    // Windows doesn't define S_IFLNK, but fileutils.c maps
    // IO_REPARSE_TAG_SYMLINK to S_IFLNK.

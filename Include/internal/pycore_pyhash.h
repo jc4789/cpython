@@ -73,7 +73,7 @@ extern int _Py_HashSecret_Initialized;
 #endif
 
 
-#ifndef MS_WINDOWS
+#if !defined(MS_WINDOWS) && !defined(__nocturne__)
 # define _py_urandom_cache_INIT \
     { \
         .fd = -1, \

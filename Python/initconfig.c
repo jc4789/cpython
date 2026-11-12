@@ -324,7 +324,7 @@ _Py_can_colorize(FILE *f)
         }
     }
 #endif
-    return isatty(fileno(f));
+    return _Py_stream_isatty(f);
 }
 
 /* Walk help text, expanding markup:

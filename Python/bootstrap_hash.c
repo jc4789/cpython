@@ -11,6 +11,8 @@
 #ifdef MS_WINDOWS
 #  include <windows.h>
 #  include <bcrypt.h>
+#elif defined(__nocturne__)
+#  include "nocturne.h"           // n_random()
 #else
 #  include <fcntl.h>              // O_RDONLY
 #  ifdef HAVE_SYS_STAT_H
@@ -74,7 +76,26 @@ win32_urandom(unsigned char *buffer, Py_ssize_t size, int raise)
     return 0;
 }
 
-#else /* !MS_WINDOWS */
+#elif defined(__nocturne__)
+
+/* Fill buffer with size bytes from the system's entropy pool (n_random),
+   which is ready when the first app starts. Return 0 on success, or raise an
+   exception (if raise is nonzero) and return -1 on error. */
+static int
+nocturne_urandom(unsigned char *buffer, Py_ssize_t size, int raise)
+{
+    n_result r = n_random(buffer, (size_t)size);
+    if (r < 0) {
+        if (raise) {
+            errno = (int)-r;
+            PyErr_SetFromErrno(PyExc_OSError);
+        }
+        return -1;
+    }
+    return 0;
+}
+
+#else /* !MS_WINDOWS && !__nocturne__ */
 
 #if defined(HAVE_GETRANDOM) || defined(HAVE_GETRANDOM_SYSCALL)
 #define PY_GETRANDOM 1
@@ -495,6 +516,8 @@ pyurandom(void *buffer, Py_ssize_t size, int blocking, int raise)
 
 #ifdef MS_WINDOWS
     return win32_urandom((unsigned char *)buffer, size, raise);
+#elif defined(__nocturne__)
+    return nocturne_urandom((unsigned char *)buffer, size, raise);
 #else
 
 #if defined(PY_GETRANDOM) || defined(PY_GETENTROPY)
@@ -592,7 +615,7 @@ _Py_HashRandomization_Init(const PyConfig *config)
 void
 _Py_HashRandomization_Fini(void)
 {
-#ifndef MS_WINDOWS
+#if !defined(MS_WINDOWS) && !defined(__nocturne__)
     dev_urandom_close();
 #endif
 }
