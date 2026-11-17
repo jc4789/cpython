@@ -1,11 +1,8 @@
 /* Python interpreter main program for frozen scripts */
 
 #include "Python.h"
+#include "pycore_fileutils.h"     // _Py_stream_isatty()
 #include "pycore_pystate.h"       // _PyInterpreterState_SetRunningMain()
-
-#ifdef HAVE_UNISTD_H
-#  include <unistd.h>             // isatty()
-#endif
 
 
 #ifdef MS_WINDOWS
