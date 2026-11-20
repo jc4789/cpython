@@ -3,6 +3,7 @@
 # For more information about this module, see PEP 324.
 #
 # Copyright (c) 2003-2005 by Peter Astrand <astrand@lysator.liu.se>
+# Copyright (c) Nocturne contributors.
 #
 # Licensed to PSF under a Contributor Agreement.
 
