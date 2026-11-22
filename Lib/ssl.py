@@ -102,15 +102,22 @@ from enum import _simple_enum
 
 import _ssl             # if we can't import it, let the error propagate
 
-from _ssl import OPENSSL_VERSION_NUMBER, OPENSSL_VERSION_INFO, OPENSSL_VERSION
-from _ssl import OPENSSL_API_VERSION_INFO
-from _ssl import _SSLContext, MemoryBIO, SSLSession
+from _ssl import OPENSSL_VERSION
+from _ssl import _SSLContext, MemoryBIO
+if sys.platform != 'nocturne':
+    # OpenSSL の版の数、session の再開、cipher の文字列。Nocturne の _ssl（Nocturne/sslmodule.c）は OpenSSL でなく、
+    # これらを持たない。
+    from _ssl import OPENSSL_VERSION_NUMBER, OPENSSL_VERSION_INFO
+    from _ssl import OPENSSL_API_VERSION_INFO
+    from _ssl import SSLSession
+    from _ssl import RAND_add
+    from _ssl import _DEFAULT_CIPHERS, _OPENSSL_API_VERSION
 from _ssl import (
     SSLError, SSLZeroReturnError, SSLWantReadError, SSLWantWriteError,
     SSLSyscallError, SSLEOFError, SSLCertVerificationError
     )
 from _ssl import txt2obj as _txt2obj, nid2obj as _nid2obj
-from _ssl import RAND_status, RAND_add, RAND_bytes
+from _ssl import RAND_status, RAND_bytes
 from _ssl import get_sigalgs
 
 
@@ -118,7 +125,6 @@ from _ssl import (
     HAS_SNI, HAS_ECDH, HAS_NPN, HAS_ALPN, HAS_SSLv2, HAS_SSLv3, HAS_TLSv1,
     HAS_TLSv1_1, HAS_TLSv1_2, HAS_TLSv1_3, HAS_PSK, HAS_PSK_TLS13, HAS_PHA
 )
-from _ssl import _DEFAULT_CIPHERS, _OPENSSL_API_VERSION
 
 _IntEnum._convert_(
     '_SSLMethod', __name__,
@@ -273,7 +279,8 @@ CHANNEL_BINDING_TYPES = ['tls-unique']
 HAS_NEVER_CHECK_COMMON_NAME = hasattr(_ssl, 'HOSTFLAG_NEVER_CHECK_SUBJECT')
 
 
-_RESTRICTED_SERVER_CIPHERS = _DEFAULT_CIPHERS
+if sys.platform != 'nocturne':
+    _RESTRICTED_SERVER_CIPHERS = _DEFAULT_CIPHERS
 
 CertificateError = SSLCertVerificationError
 

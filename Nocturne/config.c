@@ -76,6 +76,7 @@ extern PyObject* PyInit_math(void);
 extern PyObject* PyInit_nocturne(void);
 extern PyObject* PyInit_pyexpat(void);
 extern PyObject* PyInit__socket(void);
+extern PyObject* PyInit__ssl(void);
 extern PyObject* PyInit_select(void);
 extern PyObject* PyInit_time(void);
 extern PyObject* PyInit_unicodedata(void);
@@ -120,6 +121,7 @@ struct _inittab _PyImport_Inittab[] = {
     {"_signal", PyInit__signal},
     {"_socket", PyInit__socket},
     {"_sre", PyInit__sre},
+    {"_ssl", PyInit__ssl},
     {"_stat", PyInit__stat},
     {"_statistics", PyInit__statistics},
     {"_string", PyInit__string},
