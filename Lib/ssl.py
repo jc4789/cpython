@@ -1410,8 +1410,19 @@ class SSLSocket(socket):
 
     def shutdown(self, how):
         self._checkClosed()
+        if how != _socket.SHUT_RD:
+            self._notify_close()
         self._sslobj = None
         super().shutdown(how)
+
+    def _notify_close(self):
+        # RFC 8446 6.1：書きの側を閉じる前に close_notify を送る。Nocturne の _ssl はここで送り、相手のものは待たない
+        # （RFC 9112 9.8 の incomplete close）。送れなくても閉じは進める。OpenSSL の _ssl は送ったと印を付けるだけ。
+        if sys.platform == 'nocturne' and self._sslobj is not None:
+            try:
+                self._sslobj.close_notify()
+            except (OSError, ValueError):
+                pass
 
     @_sslcopydoc
     def unwrap(self):
@@ -1430,6 +1441,7 @@ class SSLSocket(socket):
             raise ValueError("No SSL wrapper around " + str(self))
 
     def _real_close(self):
+        self._notify_close()
         self._sslobj = None
         super()._real_close()
 

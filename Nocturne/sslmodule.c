@@ -1528,6 +1528,48 @@ socket_pending(PyObject *op_self, PyObject *Py_UNUSED(ignored))
     return PyLong_FromSize_t(self->ns ? ns_pending(self->ns) : 0);
 }
 
+/* 送りの列の残りと close_notify を送り終えるまで（RFC 8446 §6.1）。0 は送り終えた、-1 は例外。 */
+static int
+close_notify_send(socket_object *self, struct op *op)
+{
+    for (;;) {
+        struct step st = {STEP_CLOSE};
+        step(self, &st);
+        if (st.result == 1) {
+            return 0;
+        }
+        if (st.result != -2) {
+            raise_stream(self, st.err);
+            return -1;
+        }
+        if (op_wait(self, op, true, "write") < 0) {
+            return -1;
+        }
+    }
+}
+
+/* close_notify を送り、相手の close_notify は待たない。RFC 8446 §6.1 は書きの側を閉じる前に close_notify を送ることを
+   求め、RFC 9112 §9.8 は Content-Length も chunked も無い応答の終わりを、close_notify を受けた時だけ完了とする。ssl.py
+   の SSLSocket は socket の書きの側を閉じる前（shutdown と close）にこれを呼ぶ。握手の前は送るものが無い。 */
+static PyObject *
+socket_close_notify(PyObject *op_self, PyObject *Py_UNUSED(ignored))
+{
+    socket_object *self = (socket_object *)op_self;
+    if (!self->handshake_done || self->ns == NULL) {
+        Py_RETURN_NONE;
+    }
+    struct op op;
+    if (op_begin(self, &op) < 0) {
+        return NULL;
+    }
+    int r = close_notify_send(self, &op);
+    op_end(&op);
+    if (r < 0) {
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
 /* close_notify を送り、相手の close_notify まで読む（その間の平文は捨てる）。socket の流れは socket を返す。 */
 static PyObject *
 socket_shutdown(PyObject *op_self, PyObject *Py_UNUSED(ignored))
@@ -1542,19 +1584,8 @@ socket_shutdown(PyObject *op_self, PyObject *Py_UNUSED(ignored))
         raise_ssl(state->error, SSL_ERROR_SSL, NULL, "shutdown before the TLS handshake finished");
         goto fail;
     }
-    for (;;) {
-        struct step st = {STEP_CLOSE};
-        step(self, &st);
-        if (st.result == 1) {
-            break;
-        }
-        if (st.result != -2) {
-            raise_stream(self, st.err);
-            goto fail;
-        }
-        if (op_wait(self, &op, true, "write") < 0) {
-            goto fail;
-        }
+    if (close_notify_send(self, &op) < 0) {
+        goto fail;
     }
     unsigned char scratch[4096];
     for (;;) {
@@ -1838,6 +1869,7 @@ static PyMethodDef socket_methods[] = {
     {"write", socket_write, METH_O, "write(b)\nWrites the bytes-like object b into the TLS object."},
     {"pending", socket_pending, METH_NOARGS, "Returns the number of already decrypted bytes available for read."},
     {"shutdown", socket_shutdown, METH_NOARGS, "Does the TLS shutdown handshake with the peer."},
+    {"close_notify", socket_close_notify, METH_NOARGS, "Sends close_notify without waiting for the peer's."},
     {"getpeercert", socket_getpeercert, METH_VARARGS, "Returns the certificate for the peer."},
     {"version", socket_version, METH_NOARGS, NULL},
     {"cipher", socket_cipher, METH_NOARGS, NULL},
