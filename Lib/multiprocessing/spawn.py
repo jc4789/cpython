@@ -37,7 +37,7 @@ def set_executable(exe):
     global _python_exe
     if exe is None:
         _python_exe = exe
-    elif sys.platform == 'win32':
+    elif sys.platform in ('win32', 'nocturne'):
         _python_exe = os.fsdecode(exe)
     else:
         _python_exe = os.fsencode(exe)
@@ -95,7 +95,7 @@ def get_command_line(**kwds):
         return [exe] + opts + ['-c', prog, '--multiprocessing-fork']
 
 
-def spawn_main(pipe_handle, parent_pid=None, tracker_fd=None):
+def spawn_main(pipe_handle, parent_pid=None, tracker_fd=None, parent_handle=None):
     '''
     Run code specified by data received over pipe
     '''
@@ -114,6 +114,13 @@ def spawn_main(pipe_handle, parent_pid=None, tracker_fd=None):
                                          source_process=source_process)
         fd = msvcrt.open_osfhandle(new_handle, os.O_RDONLY)
         parent_sentinel = source_process
+    elif sys.platform == 'nocturne':
+        import nocturne
+        # pipe_handle and parent_handle are the child's own handles, put in
+        # its table by the launch (popen_spawn_nocturne): the channel its
+        # launcher writes to, and the launcher's app, which reports its end.
+        fd = nocturne._fd_adopt(pipe_handle, True, False)
+        parent_sentinel = parent_handle
     else:
         from . import resource_tracker
         resource_tracker._resource_tracker._fd = tracker_fd

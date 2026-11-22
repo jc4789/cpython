@@ -1532,13 +1532,15 @@ fail:
 }
 
 /* Launches the program at the complete path. standard holds the descriptors
-   for the app's input, output and log streams (-1: none); its handles are the
-   capabilities this app holds, as a shell's children's are, and it reaches
-   the terminal through those of its streams that reach this app's. Returns
-   the app's handle, or a negative n_result; errno EBADF for a bad descriptor. */
+   for the app's input, output and log streams (-1: none). Its handles are
+   given first, so that the app's handle i is given[i] (§5), and after them the
+   capabilities this app holds, as a shell's children's are, which the app
+   finds by kind. It reaches the terminal through those of its streams that
+   reach this app's. Returns the app's handle, or a negative n_result. */
 static n_handle
 launch_app(const char *program, const char **arguments, uint32_t argument_count, const char **environment_strings,
-           uint32_t environment_count, const int standard[3], const char *folder)
+           uint32_t environment_count, const int standard[3], const char *folder, const int32_t *given,
+           uint32_t given_count)
 {
     int32_t streams[3];
     for (int i = 0; i < 3; i++) {
@@ -1550,14 +1552,21 @@ launch_app(const char *program, const char **arguments, uint32_t argument_count,
             }
         }
     }
-    int32_t caps[N_CAP_COUNT];
+    int32_t *handles = PyMem_RawMalloc(((size_t)given_count + N_CAP_COUNT) * sizeof *handles);
+    if (handles == NULL) {
+        return -N_ERR_NO_MEMORY;
+    }
+    for (uint32_t i = 0; i < given_count; i++) {
+        handles[i] = given[i];
+    }
+    uint32_t caps = (uint32_t)n_caps_list(handles + given_count);
     struct n_launch launch = {
         .arguments = arguments,
         .environment = environment_strings,
-        .handles = caps,
+        .handles = handles,
         .argument_count = argument_count,
         .environment_count = environment_count,
-        .handle_count = (uint32_t)n_caps_list(caps),
+        .handle_count = given_count + caps,
         .folder = folder,
         .input = streams[0],
         .output = streams[1],
@@ -1565,7 +1574,9 @@ launch_app(const char *program, const char **arguments, uint32_t argument_count,
         .interrupts = -1,
     };
     launch.terminal = n_launch_terminal(&launch);
-    return n_app_launch(program, &launch);
+    n_handle app = n_app_launch(program, &launch);
+    PyMem_RawFree(handles);
+    return app;
 }
 
 enum wait_outcome {
@@ -1605,23 +1616,61 @@ wait_app(n_handle app, uint64_t deadline, struct n_app_end *end, n_result *error
     }
 }
 
-/* _launch(program, arguments, environment, standard, folder): the app's handle
-   and its identifier (getpid's in the app). environment None is this app's
-   (putenv's); standard the descriptors for its input, output and log (-1: none);
-   folder None the current one. */
+/* The handles of a sequence of ints, in a new array: NULL with an exception
+   on failure. */
+static int32_t *
+handle_array(PyObject *seq, uint32_t *count)
+{
+    PyObject *fast = PySequence_Fast(seq, "handles must be a sequence");
+    if (fast == NULL) {
+        return NULL;
+    }
+    Py_ssize_t n = PySequence_Fast_GET_SIZE(fast);
+    int32_t *array = PyMem_Malloc(((size_t)n + 1) * sizeof *array);
+    if (array == NULL) {
+        Py_DECREF(fast);
+        PyErr_NoMemory();
+        return NULL;
+    }
+    for (Py_ssize_t i = 0; i < n; i++) {
+        int h = PyLong_AsInt(PySequence_Fast_GET_ITEM(fast, i));
+        if (h == -1 && PyErr_Occurred()) {
+            Py_DECREF(fast);
+            PyMem_Free(array);
+            return NULL;
+        }
+        array[i] = h;
+    }
+    Py_DECREF(fast);
+    *count = (uint32_t)n;
+    return array;
+}
+
+/* _launch(program, arguments, environment, standard, folder, handles=()): the
+   app's handle and its identifier (getpid's in the app). environment None is
+   this app's (putenv's); standard the descriptors for its input, output and
+   log (-1: none); folder None the current one; handles the handles it gets,
+   handle i of the app being handles[i] (negative: none). */
 static PyObject *
 nocturne__launch(PyObject *module, PyObject *args)
 {
     path_arg program = PATH_ARG(false, false), folder = PATH_ARG(true, false);
-    PyObject *arguments, *environment_object;
+    PyObject *arguments, *environment_object, *handles_object = NULL;
     int standard[3];
-    if (!PyArg_ParseTuple(args, "O&OO(iii)O&:_launch", path_converter, &program, &arguments, &environment_object,
-                          &standard[0], &standard[1], &standard[2], path_converter, &folder)) {
+    if (!PyArg_ParseTuple(args, "O&OO(iii)O&|O:_launch", path_converter, &program, &arguments, &environment_object,
+                          &standard[0], &standard[1], &standard[2], path_converter, &folder, &handles_object)) {
         return NULL;
     }
     PyObject *result = NULL, *keep_arguments = NULL, *keep_environment = NULL;
     const char **argv = NULL, **envp = NULL;
-    uint32_t argc = 0, envc = 0;
+    int32_t *given = NULL;
+    uint32_t argc = 0, envc = 0, given_count = 0;
+    if (handles_object != NULL) {
+        given = handle_array(handles_object, &given_count);
+        if (given == NULL) {
+            goto done;
+        }
+    }
     char path[_PY_PATH_MAX], cwd[_PY_PATH_MAX];
     if (path_complete(&program, path) < 0 || path_complete(&folder, cwd) < 0) {
         goto done;
@@ -1646,7 +1695,7 @@ nocturne__launch(PyObject *module, PyObject *args)
     }
     n_handle app;
     Py_BEGIN_ALLOW_THREADS
-    app = launch_app(path, argv, argc, envp, envc, standard, cwd);
+    app = launch_app(path, argv, argc, envp, envc, standard, cwd, given, given_count);
     Py_END_ALLOW_THREADS
     if (app < 0) {
         raise_result(app, program.object);
@@ -1658,6 +1707,7 @@ nocturne__launch(PyObject *module, PyObject *args)
         }
     }
 done:
+    PyMem_Free(given);
     PyMem_Free(argv);
     PyMem_Free(envp);
     Py_XDECREF(keep_arguments);
@@ -1869,6 +1919,46 @@ nocturne__handle_close(PyObject *module, PyObject *arg)
     return r < 0 ? raise_result(r, NULL) : Py_NewRef(Py_None);
 }
 
+/* _app_open(id): a handle of the running app of identifier id, one this app
+   may touch (§13): it reports N_EVENT_APP_ENDED when the app ends. */
+static PyObject *
+nocturne__app_open(PyObject *module, PyObject *arg)
+{
+    long long id = PyLong_AsLongLong(arg);
+    if (id == -1 && PyErr_Occurred()) {
+        return NULL;
+    }
+    n_handle h = n_app_open(id);
+    return h < 0 ? raise_result(h, NULL) : PyLong_FromLong(h);
+}
+
+/* _fd_adopt(handle, readable, writable): a descriptor for a handle this app
+   holds (a channel's end, a TCP connection, a document), which closes the
+   handle when its last descriptor closes. */
+static PyObject *
+nocturne__fd_adopt(PyObject *module, PyObject *args)
+{
+    int h, readable, writable;
+    if (!PyArg_ParseTuple(args, "ipp:_fd_adopt", &h, &readable, &writable)) {
+        return NULL;
+    }
+    int fd = _Py_fd_adopt(h, readable, writable);
+    return fd < 0 ? PyErr_SetFromErrno(PyExc_OSError) : PyLong_FromLong(fd);
+}
+
+/* _fd_handle(fd): the handle a descriptor speaks for; it stays the
+   descriptor's. */
+static PyObject *
+nocturne__fd_handle(PyObject *module, PyObject *arg)
+{
+    int fd;
+    if (fd_argument(arg, &fd) < 0) {
+        return NULL;
+    }
+    n_handle h = _Py_fd_handle(fd);
+    return h < 0 ? PyErr_SetFromErrno(PyExc_OSError) : PyLong_FromLong(h);
+}
+
 /* _find_program(name): the complete path of the program a shell runs for
    name (a bare name is looked for in the system's and the apps' folders), or
    None. */
@@ -1926,7 +2016,7 @@ nocturne_system(PyObject *module, PyObject *args, PyObject *kwargs)
     n_result error = 0;
     enum wait_outcome outcome = WAIT_FAILED;
     Py_BEGIN_ALLOW_THREADS
-    n_handle app = launch_app(sh, argv, 3, envp, envc, standard, n_folder());
+    n_handle app = launch_app(sh, argv, 3, envp, envc, standard, n_folder(), NULL, 0);
     if (app < 0) {
         error = app;
     }
@@ -2141,12 +2231,17 @@ static PyMethodDef nocturne_methods[] = {
     {"strerror", nocturne_strerror, METH_O, "strerror(code, /)\n--\n\nTranslate an error code to a message string."},
     {"_exit", KEYWORDS(nocturne__exit), "_exit(status)\n--\n\nEnd the app at once with the status."},
     {"_launch", nocturne__launch, METH_VARARGS,
-     "_launch(program, arguments, environment, standard, folder, /)\n--\n\n"
+     "_launch(program, arguments, environment, standard, folder, handles=(), /)\n--\n\n"
      "Launch an app and return its handle and identifier (Lib/subprocess.py)."},
     {"_wait", nocturne__wait, METH_VARARGS, "_wait(app, timeout=None, /)\n--\n\n"
                                             "Wait for an app's end: how it ended (app_end), or None after timeout seconds."},
     {"_stop", nocturne__stop, METH_O, "_stop(app, /)\n--\n\nStop an app and every app it launched."},
     {"_handle_close", nocturne__handle_close, METH_O, "_handle_close(handle, /)\n--\n\nClose a handle."},
+    {"_app_open", nocturne__app_open, METH_O,
+     "_app_open(id, /)\n--\n\nA handle of the running app of identifier id."},
+    {"_fd_adopt", nocturne__fd_adopt, METH_VARARGS,
+     "_fd_adopt(handle, readable, writable, /)\n--\n\nA descriptor that owns a handle this app holds."},
+    {"_fd_handle", nocturne__fd_handle, METH_O, "_fd_handle(fd, /)\n--\n\nThe handle a descriptor speaks for."},
     {"_find_program", nocturne__find_program, METH_O,
      "_find_program(name, /)\n--\n\nReturn the path of the program a shell runs for name, or None."},
     {"_user_folder", nocturne__user_folder, METH_NOARGS, "_user_folder()\n--\n\nReturn the user's folder."},

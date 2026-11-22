@@ -281,7 +281,33 @@ class DefaultContext(BaseContext):
 # Context types for fixed start method
 #
 
-if sys.platform != 'win32':
+if sys.platform == 'nocturne':
+
+    # Nocturne starts an app from a program (n_app_launch) and copies nothing
+    # of the launcher: spawn is its one start method. The child's handles are
+    # the table its launcher names (popen_spawn_nocturne).
+    class SpawnProcess(process.BaseProcess):
+        _start_method = 'spawn'
+        @staticmethod
+        def _Popen(process_obj):
+            from .popen_spawn_nocturne import Popen
+            return Popen(process_obj)
+
+        @staticmethod
+        def _after_fork():
+            # process is spawned, nothing to do
+            pass
+
+    class SpawnContext(BaseContext):
+        _name = 'spawn'
+        Process = SpawnProcess
+
+    _concrete_contexts = {
+        'spawn': SpawnContext(),
+    }
+    _default_context = DefaultContext(_concrete_contexts['spawn'])
+
+elif sys.platform != 'win32':
 
     class ForkProcess(process.BaseProcess):
         _start_method = 'fork'

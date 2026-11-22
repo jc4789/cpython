@@ -34,6 +34,9 @@ except ImportError:
         raise
     _winapi = None
 
+if sys.platform == 'nocturne':
+    import nocturne
+
 #
 #
 #
@@ -381,6 +384,37 @@ if _winapi:
             return f
 
 
+if sys.platform == 'nocturne':
+
+    class ChannelConnection(_ConnectionBase):
+        """
+        Connection class based on an end of a Nocturne channel. Its messages
+        are the channel's, whose boundaries the system keeps
+        (docs/nocturne-native-abi.md §4). The handles a pickled object
+        names travel before it as the channel's attachments (reduction.py).
+        """
+
+        def _close(self, _close=nocturne._handle_close):
+            _close(self._handle)
+
+        def _send_bytes(self, buf):
+            _multiprocessing.channel_send(self._handle, buf,
+                                          reduction._carried_take())
+
+        def _recv_bytes(self, maxsize=None):
+            data, handles = _multiprocessing.channel_receive(self._handle,
+                                                             maxsize)
+            reduction._carried_give(handles)
+            if data is None:
+                return None
+            buf = io.BytesIO(data)
+            buf.seek(0, io.SEEK_END)
+            return buf
+
+        def _poll(self, timeout):
+            return bool(wait([self], timeout))
+
+
 class Connection(_ConnectionBase):
     """
     Connection class based on an arbitrary file descriptor (Unix only), or
@@ -561,7 +595,19 @@ def Client(address, family=None, authkey=None):
     return c
 
 
-if sys.platform != 'win32':
+if sys.platform == 'nocturne':
+
+    def Pipe(duplex=True):
+        '''
+        Returns pair of connection objects at either end of a pipe
+        '''
+        h1, h2 = _multiprocessing.channel_pair()
+        if duplex:
+            return ChannelConnection(h1), ChannelConnection(h2)
+        return (ChannelConnection(h1, writable=False),
+                ChannelConnection(h2, readable=False))
+
+elif sys.platform != 'win32':
 
     def Pipe(duplex=True):
         '''
@@ -1168,6 +1214,36 @@ if sys.platform == 'win32':
         ready_objects.update(waithandle_to_obj[h] for h in ready_handles)
         return [o for o in object_list if o in ready_objects]
 
+elif sys.platform == 'nocturne':
+
+    def wait(object_list, timeout=None):
+        '''
+        Wait till an object in object_list is ready/readable.
+
+        Returns list of those objects in object_list which are ready/readable.
+        An int is a handle: a process's sentinel is its app, ready once the
+        app has ended. A channel connection waits for a message or the end
+        of the other end; other objects are descriptors (fileno()), ready
+        when bytes wait or the other end has gone.
+        '''
+        handles = []
+        descriptors = []
+        keys = []
+        for o in object_list:
+            if isinstance(o, ChannelConnection):
+                key = ('handle', o.fileno())
+            elif isinstance(o, int):
+                key = ('handle', o)
+            else:
+                key = ('descriptor', o.fileno())
+            (handles if key[0] == 'handle' else descriptors).append(key[1])
+            keys.append(key)
+        ready_handles, ready_descriptors = _multiprocessing.wait(
+            handles, descriptors, timeout)
+        ready = {('handle', h) for h in ready_handles}
+        ready.update(('descriptor', d) for d in ready_descriptors)
+        return [o for o, key in zip(object_list, keys) if key in ready]
+
 else:
 
     import selectors
@@ -1228,6 +1304,22 @@ if sys.platform == 'win32':
         handle = dh.detach()
         return PipeConnection(handle, readable, writable)
     reduction.register(PipeConnection, reduce_pipe_connection)
+
+elif sys.platform == 'nocturne':
+    def reduce_connection(conn):
+        dh = reduction.DupHandle(nocturne._fd_handle(conn.fileno()))
+        return rebuild_connection, (dh, conn.readable, conn.writable)
+    def rebuild_connection(dh, readable, writable):
+        return Connection(nocturne._fd_adopt(dh.detach(), True, True),
+                          readable, writable)
+    reduction.register(Connection, reduce_connection)
+
+    def reduce_channel_connection(conn):
+        dh = reduction.DupHandle(conn.fileno())
+        return rebuild_channel_connection, (dh, conn.readable, conn.writable)
+    def rebuild_channel_connection(dh, readable, writable):
+        return ChannelConnection(dh.detach(), readable, writable)
+    reduction.register(ChannelConnection, reduce_channel_connection)
 
 else:
     def reduce_connection(conn):

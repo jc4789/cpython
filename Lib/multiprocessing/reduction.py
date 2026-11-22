@@ -21,7 +21,7 @@ from . import context
 __all__ = ['send_handle', 'recv_handle', 'ForkingPickler', 'register', 'dump']
 
 
-HAVE_SEND_HANDLE = (sys.platform == 'win32' or
+HAVE_SEND_HANDLE = (sys.platform in ('win32', 'nocturne') or
                     (hasattr(socket, 'CMSG_LEN') and
                      hasattr(socket, 'SCM_RIGHTS') and
                      hasattr(socket.socket, 'sendmsg')))
@@ -47,6 +47,9 @@ class ForkingPickler(pickle.Pickler):
 
     @classmethod
     def dumps(cls, obj, protocol=None):
+        if sys.platform == 'nocturne':
+            # the handles this pickle names, for the message that sends it
+            _carried.outgoing = []
         buf = io.BytesIO()
         cls(buf, protocol).dump(obj)
         return buf.getbuffer()
@@ -133,6 +136,76 @@ if sys.platform == 'win32':
                     self._access, False, _winapi.DUPLICATE_CLOSE_SOURCE)
             finally:
                 _winapi.CloseHandle(proc)
+
+elif sys.platform == 'nocturne':
+    # Nocturne: a handle reaches another app only in the table of the launch
+    # that starts it, or as an attachment of a channel's message
+    # (docs/nocturne-native-abi.md §4, §5). A DupHandle pickled for a spawned
+    # process is its number in the table (popen_spawn_nocturne); any other is
+    # the position of its handle among the attachments carried before the
+    # message that sends the pickle (connection.ChannelConnection). Pickling
+    # and sending one message, and receiving and unpickling one, happen on
+    # one thread: _carried is per thread.
+    __all__ += ['DupHandle']
+    import nocturne
+    import threading
+
+    _carried = threading.local()
+
+    def _carried_take():
+        '''The handles the last pickle of this thread named.'''
+        handles = getattr(_carried, 'outgoing', None) or ()
+        _carried.outgoing = []
+        return handles
+
+    def _carried_give(handles):
+        '''The handles carried before the message this thread just received.
+        Those of the message before that no unpickling took are closed.'''
+        for handle in getattr(_carried, 'incoming', ()):
+            if handle is not None:
+                nocturne._handle_close(handle)
+        _carried.incoming = list(handles)
+
+    def send_handle(conn, handle, destination_pid):
+        '''Send a handle over a local connection.'''
+        conn.send(DupHandle(handle))
+
+    def recv_handle(conn):
+        '''Receive a handle over a local connection.'''
+        return conn.recv().detach()
+
+    def _rebuild_dup_handle(handle, carried):
+        dh = DupHandle.__new__(DupHandle)
+        dh._handle = handle
+        dh._carried = carried
+        return dh
+
+    class DupHandle(object):
+        '''Picklable wrapper for a handle.'''
+        def __init__(self, handle):
+            self._handle = handle
+            self._carried = False
+
+        def __reduce__(self):
+            popen = context.get_spawning_popen()
+            if popen is not None:
+                return _rebuild_dup_handle, (
+                    popen.duplicate_for_child(self._handle), False)
+            outgoing = _carried.__dict__.setdefault('outgoing', [])
+            outgoing.append(self._handle)
+            return _rebuild_dup_handle, (len(outgoing) - 1, True)
+
+        def detach(self):
+            '''Get the handle.  This should only be called once.'''
+            if not self._carried:
+                return self._handle
+            incoming = getattr(_carried, 'incoming', ())
+            if self._handle >= len(incoming) or incoming[self._handle] is None:
+                raise RuntimeError('a handle travels only with a channel '
+                                   'connection\'s message')
+            handle = incoming[self._handle]
+            incoming[self._handle] = None
+            return handle
 
 else:
     # Unix
@@ -238,6 +311,15 @@ if sys.platform == 'win32':
         return ds.detach()
     register(socket.socket, _reduce_socket)
 
+elif sys.platform == 'nocturne':
+    def _reduce_socket(s):
+        dh = DupHandle(nocturne._fd_handle(s.fileno()))
+        return _rebuild_socket, (dh, s.family, s.type, s.proto)
+    def _rebuild_socket(dh, family, type, proto):
+        fd = nocturne._fd_adopt(dh.detach(), True, True)
+        return socket.socket(family, type, proto, fileno=fd)
+    register(socket.socket, _reduce_socket)
+
 else:
     def _reduce_socket(s):
         df = DupFd(s.fileno())
@@ -261,6 +343,8 @@ class AbstractReducer(metaclass=ABCMeta):
     if sys.platform == 'win32':
         steal_handle = steal_handle
         duplicate = duplicate
+        DupHandle = DupHandle
+    elif sys.platform == 'nocturne':
         DupHandle = DupHandle
     else:
         sendfds = sendfds

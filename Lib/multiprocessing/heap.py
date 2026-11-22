@@ -9,7 +9,6 @@
 
 import bisect
 from collections import defaultdict
-import mmap
 import os
 import sys
 import tempfile
@@ -17,6 +16,14 @@ import threading
 
 from .context import reduction, assert_spawning
 from . import util
+
+if sys.platform == 'nocturne':
+    # Nocturne has no mmap: an arena is pages of shared memory (§7)
+    import _multiprocessing
+    _PAGESIZE = _multiprocessing.PAGESIZE
+else:
+    import mmap
+    _PAGESIZE = mmap.PAGESIZE
 
 __all__ = ['BufferWrapper']
 
@@ -61,6 +68,27 @@ if sys.platform == 'win32':
             # XXX Temporarily preventing buildbot failures while determining
             # XXX the correct long-term fix. See issue 23060
             #assert _winapi.GetLastError() == _winapi.ERROR_ALREADY_EXISTS
+
+elif sys.platform == 'nocturne':
+
+    class Arena(object):
+        """
+        A shared memory area: pages of a shared object (Nocturne). A spawned
+        process gets the object's handle in the launch's table.
+        """
+
+        def __init__(self, size, handle=-1):
+            self.size = size
+            self.buffer = _multiprocessing.Shared(size, handle)
+            self.handle = self.buffer.handle
+
+    def reduce_arena(a):
+        return rebuild_arena, (a.size, reduction.DupHandle(a.handle))
+
+    def rebuild_arena(size, dh):
+        return Arena(size, dh.detach())
+
+    reduction.register(Arena, reduce_arena)
 
 else:
 
@@ -120,7 +148,7 @@ class Heap(object):
     _DISCARD_FREE_SPACE_LARGER_THAN = 4 * 1024 ** 2  # 4 MB
     _DOUBLE_ARENA_SIZE_UNTIL = 4 * 1024 ** 2
 
-    def __init__(self, size=mmap.PAGESIZE):
+    def __init__(self, size=_PAGESIZE):
         self._lastpid = os.getpid()
         self._lock = threading.Lock()
         # Current arena allocation size
@@ -157,7 +185,7 @@ class Heap(object):
 
     def _new_arena(self, size):
         # Create a new arena with at least the given *size*
-        length = self._roundup(max(self._size, size), mmap.PAGESIZE)
+        length = self._roundup(max(self._size, size), _PAGESIZE)
         # We carve larger and larger arenas, for efficiency, until we
         # reach a large-ish size (roughly L3 cache-sized)
         if self._size < self._DOUBLE_ARENA_SIZE_UNTIL:

@@ -21,9 +21,16 @@ from . import context
 from . import process
 from . import util
 
+# Nocturne's SemLock is a word on shared pages (Nocturne/multiprocessingmodule.c):
+# it has no name, and a child gets its handle in the launch's table.
+_nocturne = sys.platform == 'nocturne'
+
 # TODO: Do any platforms still lack a functioning sem_open?
 try:
-    from _multiprocessing import SemLock, sem_unlink
+    if _nocturne:
+        from _multiprocessing import SemLock
+    else:
+        from _multiprocessing import SemLock, sem_unlink
 except ImportError:
     raise ImportError("This platform lacks a functioning sem_open" +
                       " implementation. https://github.com/python/cpython/issues/48020.")
@@ -51,6 +58,11 @@ class SemLock(object):
             ctx = context._default_context.get_context()
         self._is_fork_ctx = ctx.get_start_method() == 'fork'
         unlink_now = sys.platform == 'win32' or self._is_fork_ctx
+        if _nocturne:
+            self._semlock = _multiprocessing.SemLock(kind, value, maxvalue)
+            util.debug('created semlock with handle %s' % self._semlock.handle)
+            self._make_methods()
+            return
         for i in range(100):
             try:
                 sl = self._semlock = _multiprocessing.SemLock(
@@ -102,7 +114,7 @@ class SemLock(object):
     def __getstate__(self):
         context.assert_spawning(self)
         sl = self._semlock
-        if sys.platform == 'win32':
+        if sys.platform == 'win32' or _nocturne:
             h = context.get_spawning_popen().duplicate_for_child(sl.handle)
         else:
             if self._is_fork_ctx:
