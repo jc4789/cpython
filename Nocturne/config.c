@@ -6,7 +6,8 @@
    as nt is on Windows and posix elsewhere; zlib is over the system's DEFLATE
    codec (Nocturne/zlibmodule.c), _socket over its TCP and UDP
    (Nocturne/socketmodule.c), select over its event queues
-   (Nocturne/selectmodule.c). */
+   (Nocturne/selectmodule.c), _bz2 over the libbzip2 of Nocturne's tree
+   (third_party/bzip2, with Nocturne/bz2error.c). */
 #include "Python.h"
 
 extern PyObject* PyInit__abc(void);
@@ -14,6 +15,7 @@ extern PyObject* PyInit__asyncio(void);
 extern PyObject* PyInit__ast(void);
 extern PyObject* PyInit__bisect(void);
 extern PyObject* PyInit__blake2(void);
+extern PyObject* PyInit__bz2(void);
 extern PyObject* PyInit__codecs(void);
 extern PyObject* PyInit__codecs_cn(void);
 extern PyObject* PyInit__codecs_hk(void);
@@ -92,6 +94,7 @@ struct _inittab _PyImport_Inittab[] = {
     {"_ast", PyInit__ast},
     {"_bisect", PyInit__bisect},
     {"_blake2", PyInit__blake2},
+    {"_bz2", PyInit__bz2},
     {"_codecs", PyInit__codecs},
     {"_collections", PyInit__collections},
     {"_contextvars", PyInit__contextvars},
