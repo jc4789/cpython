@@ -2572,6 +2572,27 @@ context_set_sni_callback(PyObject *self, PyObject *value, void *Py_UNUSED(closur
     return 0;
 }
 
+/* post-handshake の認証（RFC 8446 §4.6.2）は無い：None は「この TLS に無い」（http.client が見る）。 */
+static PyObject *
+context_get_post_handshake_auth(PyObject *Py_UNUSED(self), void *Py_UNUSED(closure))
+{
+    Py_RETURN_NONE;
+}
+
+static int
+context_set_post_handshake_auth(PyObject *Py_UNUSED(self), PyObject *value, void *Py_UNUSED(closure))
+{
+    int on = value == NULL ? 0 : PyObject_IsTrue(value);
+    if (on < 0) {
+        return -1;
+    }
+    if (on) {
+        PyErr_SetString(PyExc_ValueError, "post-handshake authentication is not supported");
+        return -1;
+    }
+    return 0;
+}
+
 static int
 context_traverse(PyObject *self, visitproc visit, void *arg)
 {
@@ -2630,6 +2651,7 @@ static PyGetSetDef context_getset[] = {
     {"minimum_version", context_get_minimum_version, context_set_minimum_version, NULL, NULL},
     {"maximum_version", context_get_maximum_version, context_set_maximum_version, NULL, NULL},
     {"sni_callback", context_get_sni_callback, context_set_sni_callback, NULL, NULL},
+    {"post_handshake_auth", context_get_post_handshake_auth, context_set_post_handshake_auth, NULL, NULL},
     {NULL}
 };
 
