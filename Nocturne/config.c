@@ -1,8 +1,8 @@
-/* The modules built into Nocturne's python (ports/cpython/README.md).
+/* Nocturne の python に組み込むモジュール（ports/cpython/README.md）。
 
-   Nocturne has no imports by name, so there are no extension modules to load:
-   every C module of the port is here, and ports/cpython/build.py compiles
-   their sources. nocturne is the os module's own (Nocturne/nocturnemodule.c),
+   標準ライブラリーの C のモジュールは全部ここにあり、ports/cpython/build.py が
+   ソースを組む（ほかの拡張モジュールは .NLIB のライブラリーとして読み込む：
+   Python/dynload_nocturne.c）。nocturne is the os module's own (Nocturne/nocturnemodule.c),
    as nt is on Windows and posix elsewhere; zlib is over the system's DEFLATE
    codec (Nocturne/zlibmodule.c), _socket over its TCP and UDP
    (Nocturne/socketmodule.c), select over its event queues

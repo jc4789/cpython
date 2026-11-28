@@ -312,11 +312,9 @@ stat_result_of_entry(nocturne_state *state, const struct n_entry *entry)
 
 /* ---- the environment ---- */
 
-/* The environment of the ported code in this app: what libc's getenv reads
-   (__libc_environment) and what the apps it launches get. putenv and
-   unsetenv change it; from the first change on, the array and its strings are
-   the module's. As with POSIX's setenv, a getenv on another thread must not
-   run while it changes. */
+/* このアプリの Python の環境：os.environ の元と、起こすアプリが受ける環境。初めは起動の環境（中核のライブラリーの
+   n_environment。変わらない）で、putenv と unsetenv が変えると、それからは配列と文字列がこのモジュールのもの
+   になる。起動の環境は変わらないので、C の getenv は起動の環境を読み続ける。 */
 static struct {
     PyMutex lock;
     char **strings;               /* "NAME=value", ended by NULL */
@@ -331,7 +329,8 @@ environment_own(void)
         return 0;
     }
     size_t count = 0;
-    while (__libc_environment[count] != NULL) {
+    char *const *launched = n_environment();
+    while (launched[count] != NULL) {
         count++;
     }
     char **strings = PyMem_RawCalloc(count + 1, sizeof *strings);
@@ -339,7 +338,7 @@ environment_own(void)
         return -1;
     }
     for (size_t i = 0; i < count; i++) {
-        strings[i] = _PyMem_RawStrdup(__libc_environment[i]);
+        strings[i] = _PyMem_RawStrdup(launched[i]);
         if (strings[i] == NULL) {
             for (size_t k = 0; k < i; k++) {
                 PyMem_RawFree(strings[k]);
@@ -350,7 +349,6 @@ environment_own(void)
     }
     environment.strings = strings;
     environment.count = count;
-    __libc_environment = strings;
     return 0;
 }
 
@@ -375,7 +373,7 @@ environment_snapshot(void)
         return NULL;
     }
     PyMutex_Lock(&environment.lock);
-    char *const *strings = environment.strings != NULL ? environment.strings : __libc_environment;
+    char *const *strings = environment.strings != NULL ? environment.strings : n_environment();
     for (size_t i = 0; strings[i] != NULL; i++) {
         PyObject *b = PyBytes_FromString(strings[i]);
         if (b == NULL || PyList_Append(list, b) < 0) {
@@ -448,7 +446,6 @@ nocturne_putenv(PyObject *module, PyObject *args)
         char **old = environment.strings;
         environment.strings = grown;
         environment.count++;
-        __libc_environment = grown;
         PyMem_RawFree(old);
     }
     PyMutex_Unlock(&environment.lock);

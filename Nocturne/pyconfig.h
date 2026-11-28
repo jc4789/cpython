@@ -3,8 +3,8 @@
    Nocturne は UNIX でも POSIX でも Windows でもない。C ライブラリーは ISO C と Nocturne のネイティブの口
    （nocturne.h）だけを持ち、unistd.h も sys の見出しも無い。だから HAVE_ の項は ISO C のものだけで、POSIX の
    関数の項は一つも立てない。機械の違いはソースの __nocturne__ の節が持つ（clang が定義する）。
-   拡張モジュールは全部プログラムに組み込む（Nocturne/config.c）：名で引く輸入が無いので、動的に読む
-   拡張は無い。 */
+   標準ライブラリーの C のモジュールはプログラムに組み込み（Nocturne/config.c）、ほかの拡張モジュールは .NLIB の
+   ライブラリーとして読み込む（Python/dynload_nocturne.c）。 */
 #ifndef Py_PYCONFIG_H
 #define Py_PYCONFIG_H
 
@@ -63,6 +63,19 @@
 #define WITH_PYMALLOC 1
 #define PYLONG_BITS_IN_DIGIT 30
 #define PY_BUILTIN_HASHLIB_HASHES "md5,sha1,sha2,sha3,blake2"
+
+/* 拡張モジュール（Python/dynload_nocturne.c、Nocturne の docs/records/nos-20261127/sekkei.md の 2.10）：
+   - python.NOS が提供する C の API は、プロバイダー _Py_NOCTURNE_API_PROVIDER の major PY_MINOR_VERSION、minor 0。
+     3.x の C の API は x ごとに互換でないので、x を major にする。
+   - 拡張モジュールは契約 _Py_NOCTURNE_EXTENSION_PROVIDER の 1.0 を提供し（Nocturne/pyextension.h）、モジュールの
+     関数（PyModExport_<名>、PyInit_<名>）をそのプロバイダーでエクスポートする。読み込む側はこの契約を名指す。
+   - 接尾辞は "." _Py_NOCTURNE_SOABI ".NLIB" を先に、".NLIB" を後に探す。 */
+#define HAVE_DYNAMIC_LOADING 1
+#define _Py_NOCTURNE_API_PROVIDER "python3"
+#define _Py_NOCTURNE_EXTENSION_PROVIDER "python.extension"
+#define _Py_NOCTURNE_EXTENSION_MAJOR 1
+#define _Py_NOCTURNE_EXTENSION_MINOR 0
+#define _Py_NOCTURNE_SOABI "cpython-" Py_STRINGIFY(PY_MAJOR_VERSION) Py_STRINGIFY(PY_MINOR_VERSION)
 
 /* n_thread_name はスレッドの名を UTF-8 の 31 バイトに切る（nocturne.h） */
 #define _PYTHREAD_NAME_MAXLEN 31

@@ -17,7 +17,7 @@ module _sysconfig
 
 #include "clinic/_sysconfig.c.h"
 
-#ifdef MS_WINDOWS
+#if defined(MS_WINDOWS) || defined(__nocturne__)
 static int
 add_string_value(PyObject *dict, const char *key, const char *str_value)
 {
@@ -53,6 +53,14 @@ _sysconfig_config_vars_impl(PyObject *module)
         return NULL;
     }
     if (add_string_value(config, "SOABI", PYD_SOABI) < 0) {
+        Py_DECREF(config);
+        return NULL;
+    }
+#endif
+#ifdef __nocturne__
+    /* 拡張モジュールの接尾辞（Python/dynload_nocturne.c の _PyImport_DynLoadFiletab の最初） */
+    if (add_string_value(config, "EXT_SUFFIX", "." _Py_NOCTURNE_SOABI ".NLIB") < 0 ||
+        add_string_value(config, "SOABI", _Py_NOCTURNE_SOABI) < 0) {
         Py_DECREF(config);
         return NULL;
     }

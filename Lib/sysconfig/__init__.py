@@ -429,16 +429,14 @@ def _init_non_posix(vars):
 
 
 def _init_nocturne(vars):
-    """Initialize the module as appropriate for Nocturne: the program and Lib
-    are in one folder, and the modules written in C are built into the
-    program."""
+    """Nocturne の値：プログラムと Lib と Include は一つのフォルダーにあり、標準ライブラリーの C のモジュールは
+    プログラムに組み込み、ほかの拡張モジュールは .NLIB のライブラリー（EXT_SUFFIX と SOABI は _sysconfig）。"""
     import _sysconfig
     vars['LIBDEST'] = get_path('stdlib')
     vars['BINLIBDEST'] = get_path('platstdlib')
     vars['INCLUDEPY'] = get_path('include')
     vars.update(_sysconfig.config_vars())
     vars['ABIFLAGS'] = 't' if vars['Py_GIL_DISABLED'] else ''
-    vars['EXT_SUFFIX'] = ''
     vars['EXE'] = ''
     vars['VERSION'] = _PY_VERSION_SHORT
     vars['BINDIR'] = os.path.dirname(_safe_realpath(sys.executable))
