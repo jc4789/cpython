@@ -23,13 +23,26 @@ const char *_PyImport_DynLoadFiletab[] = {
     NULL,
 };
 
+/* 書式から作る文（PyUnicode_FromFormat の書式は ASCII だけなので、UTF-8 の文は C の書式で作る）。パスのバイトが
+   UTF-8 でなければ surrogateescape で持つ。 */
+static PyObject *
+message(const char *format, ...)
+{
+    char text[1024];
+    va_list arguments;
+    va_start(arguments, format);
+    PyOS_vsnprintf(text, sizeof(text), format, arguments);
+    va_end(arguments);
+    return PyUnicode_DecodeUTF8(text, (Py_ssize_t)strlen(text), "surrogateescape");
+}
+
 /* 結び付けの失敗（struct n_link_failure）の文。 */
 static PyObject *
 link_failure_text(const char *pathname, n_result r)
 {
     struct n_link_failure f;
     if (n_image_failure(&f) < 0) {
-        return PyUnicode_FromFormat("%s を読み込めない：%s", pathname, n_result_text(r));
+        return message("%s を読み込めない：%s", pathname, n_result_text(r));
     }
     const char *why;
     switch (f.reason) {
@@ -67,25 +80,24 @@ link_failure_text(const char *pathname, n_result r)
         why = n_result_text(r);
         break;
     }
-    return PyUnicode_FromFormat("%s を読み込めない：%s（%s の要求 %s %u.%u%s%s）", pathname, why, f.image,
-                                f.provider, (unsigned)f.major, (unsigned)f.minor, f.symbol[0] ? " の " : "",
-                                f.symbol);
+    return message("%s を読み込めない：%s（%s の要求 %s %u.%u%s%s）", pathname, why, f.image, f.provider,
+                   (unsigned)f.major, (unsigned)f.minor, f.symbol[0] ? " の " : "", f.symbol);
 }
 
 static int
-set_import_error(PyObject *message, const char *shortname, const char *pathname)
+set_import_error(PyObject *text, const char *shortname, const char *pathname)
 {
-    if (message == NULL) {
+    if (text == NULL) {
         return -1;
     }
     PyObject *name = PyUnicode_FromString(shortname);
     PyObject *path = name != NULL ? PyUnicode_DecodeFSDefault(pathname) : NULL;
     if (path != NULL) {
-        PyErr_SetImportError(message, name, path);
+        PyErr_SetImportError(text, name, path);
     }
     Py_XDECREF(path);
     Py_XDECREF(name);
-    Py_DECREF(message);
+    Py_DECREF(text);
     return -1;
 }
 
@@ -95,7 +107,7 @@ _PyImport_FindSharedFuncptr(const char *prefix, const char *shortname, const cha
     (void)fp;
     n_handle document = n_document_open(pathname, N_DOCUMENT_READ);
     if (document < 0) {
-        set_import_error(PyUnicode_FromFormat("%s を開けない：%s", pathname, n_result_text(document)), shortname,
+        set_import_error(message("%s を開けない：%s", pathname, n_result_text(document)), shortname,
                          pathname);
         return NULL;
     }
@@ -109,7 +121,7 @@ _PyImport_FindSharedFuncptr(const char *prefix, const char *shortname, const cha
     n_handle_close(document);
     if (r < 0) {
         if (r == -N_ERR_WRONG_GENERATION) {
-            set_import_error(PyUnicode_FromFormat("%s は拡張モジュールの契約 %s %d.%d を提供しない", pathname,
+            set_import_error(message("%s は拡張モジュールの契約 %s %d.%d を提供しない", pathname,
                                                   _Py_NOCTURNE_EXTENSION_PROVIDER, _Py_NOCTURNE_EXTENSION_MAJOR,
                                                   _Py_NOCTURNE_EXTENSION_MINOR),
                              shortname, pathname);
