@@ -48,8 +48,20 @@ link_failure_text(const char *pathname, n_result r)
     case N_LINK_SINGLE:
         why = "プロセスに一つのプロバイダーの結び付けが合わない";
         break;
+    case N_LINK_REPLACEMENT:
+        why = "置き換えの項が置き換えられるエクスポートを指さない";
+        break;
+    case N_LINK_ABI:
+        why = "nocturne.abi を要求できないイメージが要求した";
+        break;
     case N_LINK_KIND:
         why = "ライブラリーのイメージでないか、壊れている";
+        break;
+    case N_LINK_CONFLICT:
+        why = "プログラムが提供するプロバイダーを、ほかのイメージも提供する";
+        break;
+    case N_LINK_RUNTIME:
+        why = "プロセスのランタイムを二つ目として読み込もうとした";
         break;
     default:
         why = n_result_text(r);
