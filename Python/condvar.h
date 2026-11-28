@@ -346,7 +346,7 @@ PyMUTEX_LOCK(PyMUTEX_T *mut)
         state = __atomic_exchange_n(&mut->state, 2, __ATOMIC_ACQUIRE);
     }
     while (state != 0) {
-        wait_on_address(&mut->state, 2, N_CLOCK_NEVER);
+        wait_on_address(&mut->state, 2, KABI_CLOCK_NEVER);
         state = __atomic_exchange_n(&mut->state, 2, __ATOMIC_ACQUIRE);
     }
     return 0;
@@ -398,13 +398,13 @@ _PyCOND_WAIT_UNTIL(PyCOND_T *cond, PyMUTEX_T *mut, uint64_t deadline)
     PyMUTEX_UNLOCK(mut);
     n_result r = wait_on_address(&cond->sequence, sequence, deadline);
     PyMUTEX_LOCK(mut);
-    return r == -N_ERR_TIMEOUT;
+    return r == -KABI_ERR_TIMEOUT;
 }
 
 Py_LOCAL_INLINE(int)
 PyCOND_WAIT(PyCOND_T *cond, PyMUTEX_T *mut)
 {
-    _PyCOND_WAIT_UNTIL(cond, mut, N_CLOCK_NEVER);
+    _PyCOND_WAIT_UNTIL(cond, mut, KABI_CLOCK_NEVER);
     return 0;
 }
 

@@ -4,7 +4,7 @@
    has no shared cursor (docs/nocturne-native-abi.md §3). Python's os and io
    speak of small numbers with a position, so the interpreter keeps them, as the
    C runtime does on Windows. Every function returns -1 and sets errno (an
-   N_ERR_* code) on failure, and raises nothing. */
+   KABI_ERR_* code) on failure, and raises nothing. */
 #ifndef Py_NOCTURNE_DESCRIPTORS_H
 #define Py_NOCTURNE_DESCRIPTORS_H
 
@@ -31,7 +31,7 @@
 /* name made complete inside the app's current folder (n_path_complete). */
 extern int _Py_complete_path(const char *name, char out[_PY_PATH_MAX]);
 /* What Python's stat says of an entry of C: (n_entry_info, n_folder_list). */
-extern void _Py_entry_stat(const struct n_entry *entry, struct _Py_stat_struct *status);
+extern void _Py_entry_stat(const struct kabi_entry *entry, struct _Py_stat_struct *status);
 extern int _Py_path_stat(const char *name, struct _Py_stat_struct *status);
 
 extern int _Py_fd_open(const char *name, int flags);
@@ -41,16 +41,16 @@ extern int _Py_fd_adopt(n_handle handle, int readable, int writable);
 /* The descriptor's handle, or -1 with errno (ENOTCONN: a socket that has
    none yet). */
 extern n_handle _Py_fd_handle(int fd);
-/* The descriptor's N_KIND_*, or -1. */
+/* The descriptor's KABI_KIND_*, or -1. */
 extern int _Py_fd_kind(int fd);
-/* A socket's descriptor, of kind N_KIND_TCP or N_KIND_UDP, before its handle;
+/* A socket's descriptor, of kind KABI_KIND_TCP or KABI_KIND_UDP, before its handle;
    _Py_fd_attach gives it the handle once (EISCONN after). */
 extern int _Py_fd_socket(int kind);
 extern int _Py_fd_attach(int fd, n_handle handle);
 /* socket の descriptor から handle を外し、handle の無い descriptor に戻す（bind() した TCP の socket が listener を
    閉じて繋ぐ時）。handle が今の handle でなければ EISCONN。handle は呼ぶ側が閉じる。 */
 extern int _Py_fd_detach(int fd, n_handle handle);
-/* What select looks at: the N_EVENT_* a call on the descriptor answers at
+/* What select looks at: the KABI_EVENT_* a call on the descriptor answers at
    once (a document's reads and writes, bytes received and not yet read), and
    the handle to wait for the rest (-1: nothing to wait for). -1 for a bad
    descriptor. */

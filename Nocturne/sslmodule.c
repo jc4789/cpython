@@ -10,7 +10,7 @@
    SSLWantReadError と SSLWantWriteError を上げ、MemoryBIO の流れは運び手の無い byte の受け渡しになる。
    一つの流れの net_stream の呼出しは、流れの錠（mtx）で一つずつにする。錠は GIL を放してから取る。
 
-   信頼の根は、set_default_verify_paths がシステムの証明書の folder（N_FOLDER_CERTIFICATES）、load_verify_locations
+   信頼の根は、set_default_verify_paths がシステムの証明書の folder（KABI_FOLDER_CERTIFICATES）、load_verify_locations
    が呼ぶ側の証明書。
 
    無いもの：client の証明書（load_cert_chain は server の身元だけ。server は CertificateRequest を送らない）、
@@ -874,7 +874,7 @@ folder_certificates(PyObject *list, const char *name)
         PyErr_SetFromErrnoWithFilename(PyExc_OSError, name);
         return -1;
     }
-    struct n_entry *entries = NULL;
+    struct kabi_entry *entries = NULL;
     n_result count = n_folder_entries(folder, &entries);
     if (count < 0) {
         errno = (int)-count;
@@ -884,7 +884,7 @@ folder_certificates(PyObject *list, const char *name)
     Py_ssize_t added = 0;
     for (n_result i = 0; i < count; i++) {
         char path[_PY_PATH_MAX];
-        if (entries[i].kind == N_KIND_FOLDER || n_path_join(folder, entries[i].name, path, sizeof path) < 0) {
+        if (entries[i].kind == KABI_KIND_FOLDER || n_path_join(folder, entries[i].name, path, sizeof path) < 0) {
             continue;
         }
         PyObject *name = PyUnicode_DecodeFSDefault(path);
@@ -1126,7 +1126,7 @@ bio_receive(void *arg, void *buf, size_t len, uint64_t Py_UNUSED(deadline))
     bio_object *in = ((socket_object *)arg)->incoming;
     size_t n = bio_pending(in);
     if (n == 0) {
-        return in->eof_written ? 0 : -N_ERR_NOT_READY;
+        return in->eof_written ? 0 : -KABI_ERR_NOT_READY;
     }
     if (n > len) {
         n = len;
@@ -1139,7 +1139,7 @@ bio_receive(void *arg, void *buf, size_t len, uint64_t Py_UNUSED(deadline))
 static n_result
 bio_send(void *arg, const void *buf, size_t len, uint64_t Py_UNUSED(deadline))
 {
-    return bio_put(((socket_object *)arg)->outgoing, buf, len) ? (n_result)len : -N_ERR_NO_MEMORY;
+    return bio_put(((socket_object *)arg)->outgoing, buf, len) ? (n_result)len : -KABI_ERR_NO_MEMORY;
 }
 
 /* ---- 流れの呼出し ---- */
@@ -1234,7 +1234,7 @@ raise_stream(socket_object *self, int err)
 /* 一つの公開の呼出しの準備：socket の流れは socket の handle と timeout の期限。 */
 struct op {
     bool bio;
-    uint64_t deadline;            /* 0：待たない、N_CLOCK_NEVER：限りなし */
+    uint64_t deadline;            /* 0：待たない、KABI_CLOCK_NEVER：限りなし */
     PyObject *sock;               /* 呼出しの間の socket（新しい参照） */
 };
 
@@ -1281,7 +1281,7 @@ op_begin(socket_object *self, struct op *op)
         goto fail;
     }
     if (timeout == Py_None) {
-        op->deadline = N_CLOCK_NEVER;
+        op->deadline = KABI_CLOCK_NEVER;
     }
     else {
         PyTime_t t;
@@ -1320,7 +1320,7 @@ op_wait(socket_object *self, struct op *op, bool want_write, const char *what)
         }
         return -1;
     }
-    unsigned interest = (want_write ? N_EVENT_SENDABLE : N_EVENT_RECEIVABLE) | N_EVENT_CLOSED;
+    unsigned interest = (want_write ? KABI_EVENT_SENDABLE : KABI_EVENT_RECEIVABLE) | KABI_EVENT_CLOSED;
     for (;;) {
         int woke;
         Py_BEGIN_ALLOW_THREADS
@@ -1995,7 +1995,7 @@ anchor_document(context_object *c, const void **doc, size_t *len)
         if (all == NULL) {
             return -1;
         }
-        if (c->system_anchors && folder_certificates(all, N_FOLDER_CERTIFICATES) < 0) {
+        if (c->system_anchors && folder_certificates(all, KABI_FOLDER_CERTIFICATES) < 0) {
             Py_DECREF(all);
             return -1;
         }
@@ -2740,7 +2740,7 @@ ssl_rand_status(PyObject *Py_UNUSED(module), PyObject *Py_UNUSED(ignored))
 static PyObject *
 ssl_get_default_verify_paths(PyObject *Py_UNUSED(module), PyObject *Py_UNUSED(ignored))
 {
-    return Py_BuildValue("(ssss)", "", "", "", N_FOLDER_CERTIFICATES);
+    return Py_BuildValue("(ssss)", "", "", "", KABI_FOLDER_CERTIFICATES);
 }
 
 static PyObject *

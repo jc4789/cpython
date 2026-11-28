@@ -650,7 +650,7 @@ _PyMem_ArenaAlloc(void *Py_UNUSED(ctx), size_t size)
                         MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 #elif defined(__nocturne__) && defined(WITH_PYMALLOC)
     void *ptr;
-    if (n_memory_reserve(size, 0, N_MEMORY_READ_WRITE, 0, &ptr) < 0) {
+    if (n_memory_reserve(size, 0, KABI_MEMORY_READ_WRITE, 0, &ptr) < 0) {
         return NULL;
     }
     return ptr;

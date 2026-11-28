@@ -41,7 +41,7 @@ message(const char *format, ...)
 static PyObject *
 link_failure_text(const char *pathname, n_result r)
 {
-    struct n_link_failure f;
+    struct kabi_link_failure f;
     if (n_image_failure(&f) < 0) {
         return message("%s を読み込めない：%s", pathname, n_result_text(r));
     }
@@ -71,13 +71,13 @@ dl_funcptr
 _PyImport_FindSharedFuncptr(const char *prefix, const char *shortname, const char *pathname, FILE *fp)
 {
     (void)fp;
-    n_handle document = n_document_open(pathname, N_DOCUMENT_READ);
+    n_handle document = n_document_open(pathname, KABI_DOCUMENT_READ);
     if (document < 0) {
         set_import_error(message("%s を開けない：%s", pathname, n_result_text(document)), shortname,
                          pathname);
         return NULL;
     }
-    const struct n_image *image;
+    const struct kabi_image *image;
     n_result r;
     Py_BEGIN_ALLOW_THREADS
     /* 同じ文書をもう一度読み込めば（PyModExport の次に PyInit を引く時）、同じイメージが返る */
@@ -86,7 +86,7 @@ _PyImport_FindSharedFuncptr(const char *prefix, const char *shortname, const cha
     Py_END_ALLOW_THREADS
     n_handle_close(document);
     if (r < 0) {
-        if (r == -N_ERR_WRONG_GENERATION) {
+        if (r == -KABI_ERR_WRONG_GENERATION) {
             set_import_error(message("%s は拡張モジュールの契約 %s %d.%d を提供しない", pathname,
                                                   _Py_NOCTURNE_EXTENSION_PROVIDER, _Py_NOCTURNE_EXTENSION_MAJOR,
                                                   _Py_NOCTURNE_EXTENSION_MINOR),

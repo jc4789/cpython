@@ -18,8 +18,8 @@
      is never a body.
    - wait: multiprocessing.connection.wait over the system's event queues
      (§6): a channel or a TCP connection is ready when it reports
-     N_EVENT_RECEIVABLE or N_EVENT_CLOSED, an app (a Process's sentinel) when
-     it reports N_EVENT_APP_ENDED.
+     KABI_EVENT_RECEIVABLE or KABI_EVENT_CLOSED, an app (a Process's sentinel) when
+     it reports KABI_EVENT_APP_ENDED.
 
    On the main thread Ctrl+C ends a wait, Python runs its SIGINT handler, and
    the wait goes on to the same deadline unless the handler raised (PEP 475). */
@@ -60,7 +60,7 @@ raise_result(n_result r)
 static int
 deadline_of(PyObject *timeout, uint64_t *deadline)
 {
-    *deadline = N_CLOCK_NEVER;
+    *deadline = KABI_CLOCK_NEVER;
     if (timeout == Py_None) {
         return 0;
     }
@@ -273,13 +273,13 @@ static PyObject *
 semlock_over(PyTypeObject *type, n_handle handle, int kind, int maxvalue)
 {
     void *mapping = NULL;
-    n_result r = n_shared_map(handle, N_PAGE_SIZE, N_MEMORY_READ_WRITE, &mapping);
+    n_result r = n_shared_map(handle, KABI_PAGE_SIZE, KABI_MEMORY_READ_WRITE, &mapping);
     if (r < 0) {
         return raise_result(r);
     }
     SemLockObject *self = (SemLockObject *)type->tp_alloc(type, 0);
     if (self == NULL) {
-        n_memory_release(mapping, N_PAGE_SIZE);
+        n_memory_release(mapping, KABI_PAGE_SIZE);
         return NULL;
     }
     self->handle = handle;
@@ -319,7 +319,7 @@ semlock_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
         PyErr_SetString(PyExc_ValueError, "invalid value");
         return NULL;
     }
-    n_handle handle = n_shared_create(N_PAGE_SIZE);
+    n_handle handle = n_shared_create(KABI_PAGE_SIZE);
     if (handle < 0) {
         return raise_result(handle);
     }
@@ -359,7 +359,7 @@ semlock_dealloc(PyObject *op)
     PyTypeObject *tp = Py_TYPE(self);
     PyObject_GC_UnTrack(self);
     if (self->page != NULL) {
-        n_memory_release(self->page, N_PAGE_SIZE);
+        n_memory_release(self->page, KABI_PAGE_SIZE);
     }
     if (self->handle >= 0) {
         n_handle_close(self->handle);
@@ -460,7 +460,7 @@ shared_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
         PyErr_SetString(PyExc_ValueError, "size must be positive");
         return NULL;
     }
-    size_t mapped = ((size_t)size + N_PAGE_SIZE - 1) & ~(size_t)(N_PAGE_SIZE - 1);
+    size_t mapped = ((size_t)size + KABI_PAGE_SIZE - 1) & ~(size_t)(KABI_PAGE_SIZE - 1);
     bool created = handle < 0;
     if (created) {
         handle = n_shared_create(mapped);
@@ -469,7 +469,7 @@ shared_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
         }
     }
     void *mapping = NULL;
-    n_result r = n_shared_map(handle, mapped, N_MEMORY_READ_WRITE, &mapping);
+    n_result r = n_shared_map(handle, mapped, KABI_MEMORY_READ_WRITE, &mapping);
     if (r < 0) {
         if (created) {
             n_handle_close(handle);
@@ -628,7 +628,7 @@ channel_wait(n_handle channel)
     for (;;) {
         int woke;
         Py_BEGIN_ALLOW_THREADS
-        woke = _PyOS_NocturneWait(channel, N_EVENT_RECEIVABLE | N_EVENT_CLOSED, NULL, 0, N_CLOCK_NEVER);
+        woke = _PyOS_NocturneWait(channel, KABI_EVENT_RECEIVABLE | KABI_EVENT_CLOSED, NULL, 0, KABI_CLOCK_NEVER);
         Py_END_ALLOW_THREADS
         if (woke >= 0) {
             return 0;
@@ -665,15 +665,15 @@ mp_channel_receive(PyObject *module, PyObject *args)
     for (;;) {
         n_result size;
         Py_BEGIN_ALLOW_THREADS
-        size = n_channel_receive(channel, NULL, 0, N_CHANNEL_PEEK, NULL);
+        size = n_channel_receive(channel, NULL, 0, KABI_CHANNEL_PEEK, NULL);
         Py_END_ALLOW_THREADS
-        if (size == -N_ERR_NOT_READY) {
+        if (size == -KABI_ERR_NOT_READY) {
             if (channel_wait(channel) < 0) {
                 goto fail;
             }
             continue;
         }
-        if (size == -N_ERR_CLOSED) {
+        if (size == -KABI_ERR_CLOSED) {
             PyErr_SetNone(PyExc_EOFError);
             goto fail;
         }
@@ -684,7 +684,7 @@ mp_channel_receive(PyObject *module, PyObject *args)
         if (size > maxsize) {
             n_result dropped;
             Py_BEGIN_ALLOW_THREADS
-            dropped = n_channel_receive(channel, NULL, 0, N_CHANNEL_DISCARD, NULL);
+            dropped = n_channel_receive(channel, NULL, 0, KABI_CHANNEL_DISCARD, NULL);
             Py_END_ALLOW_THREADS
             if (dropped < 0) {
                 raise_result(dropped);
@@ -701,14 +701,14 @@ mp_channel_receive(PyObject *module, PyObject *args)
         Py_BEGIN_ALLOW_THREADS
         got = n_channel_receive(channel, PyBytes_AS_STRING(data), (size_t)size, 0, &attached);
         Py_END_ALLOW_THREADS
-        if (got == -N_ERR_TOO_LARGE || got == -N_ERR_NOT_READY) {
+        if (got == -KABI_ERR_TOO_LARGE || got == -KABI_ERR_NOT_READY) {
             /* another thread took the message measured */
             Py_DECREF(data);
             continue;
         }
         if (got < 0) {
             Py_DECREF(data);
-            if (got == -N_ERR_CLOSED) {
+            if (got == -KABI_ERR_CLOSED) {
                 PyErr_SetNone(PyExc_EOFError);
             }
             else {
@@ -743,7 +743,7 @@ struct waited {
     PyObject *object;                 /* borrowed from the caller's sequence */
     n_handle handle;                  /* -1: nothing to wait for */
     uint32_t interest;
-    uint32_t ready;                   /* N_EVENT_* */
+    uint32_t ready;                   /* KABI_EVENT_* */
 };
 
 /* The handles of the caller's sequence: 0, or -1 with an exception. Handles
@@ -758,14 +758,14 @@ read_waited(bool descriptors, struct waited *out, Py_ssize_t n, PyObject *fast)
         if (value == -1 && PyErr_Occurred()) {
             return -1;
         }
-        struct waited w = {.object = object, .handle = value, .interest = N_EVENT_RECEIVABLE | N_EVENT_CLOSED};
+        struct waited w = {.object = object, .handle = value, .interest = KABI_EVENT_RECEIVABLE | KABI_EVENT_CLOSED};
         if (descriptors) {
             int ready = _Py_fd_poll(value, &w.handle);
             if (ready < 0) {
                 PyErr_SetFromErrno(PyExc_OSError);
                 return -1;
             }
-            w.ready = (uint32_t)ready & (N_EVENT_RECEIVABLE | N_EVENT_CLOSED);
+            w.ready = (uint32_t)ready & (KABI_EVENT_RECEIVABLE | KABI_EVENT_CLOSED);
         }
         else {
             n_result kind = n_handle_kind(value);
@@ -773,8 +773,8 @@ read_waited(bool descriptors, struct waited *out, Py_ssize_t n, PyObject *fast)
                 raise_result(kind);
                 return -1;
             }
-            if (kind == N_KIND_APP) {
-                w.interest = N_EVENT_APP_ENDED;
+            if (kind == KABI_KIND_APP) {
+                w.interest = KABI_EVENT_APP_ENDED;
             }
         }
         out[i] = w;
@@ -811,7 +811,7 @@ mp_wait(PyObject *module, PyObject *args)
     PyObject *hfast = PySequence_Fast(handles_object, "handles must be a sequence");
     PyObject *dfast = hfast == NULL ? NULL : PySequence_Fast(descriptors_object, "descriptors must be a sequence");
     struct waited *list = NULL;
-    struct n_event *events = NULL;
+    struct kabi_event *events = NULL;
     n_handle queue = -1;
     if (dfast == NULL) {
         goto done;
@@ -819,7 +819,7 @@ mp_wait(PyObject *module, PyObject *args)
     Py_ssize_t nh = PySequence_Fast_GET_SIZE(hfast), nd = PySequence_Fast_GET_SIZE(dfast);
     Py_ssize_t n = nh + nd;
     list = PyMem_New(struct waited, n > 0 ? n : 1);
-    events = PyMem_New(struct n_event, n + 1);
+    events = PyMem_New(struct kabi_event, n + 1);
     if (list == NULL || events == NULL) {
         PyErr_NoMemory();
         goto done;
@@ -924,7 +924,7 @@ mp_exec(PyObject *module)
         return -1;
     }
     /* the granule of shared memory and its mappings (multiprocessing.heap) */
-    return PyModule_AddIntConstant(module, "PAGESIZE", (long)N_PAGE_SIZE);
+    return PyModule_AddIntConstant(module, "PAGESIZE", (long)KABI_PAGE_SIZE);
 }
 
 static int

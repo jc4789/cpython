@@ -115,8 +115,8 @@ PyAPI_FUNC(void*) _PyOS_SigintEvent(void);
 extern int _PyOS_NocturneInterruptible(void);
 
 // On an interruptible thread: wait until handle h (-1: none) reports one of
-// interest (N_EVENT_*), the word at address (NULL: none) holds another value
-// than expected, the monotonic clock reaches deadline (N_CLOCK_NEVER: never),
+// interest (KABI_EVENT_*), the word at address (NULL: none) holds another value
+// than expected, the monotonic clock reaches deadline (KABI_CLOCK_NEVER: never),
 // or SIGINT is delivered. 1: the handle or the word, 0: the deadline,
 // -1: SIGINT. Another thread waits for the handle or the word in the same
 // way, without SIGINT.
@@ -130,14 +130,14 @@ extern int _PyOS_NocturneWait(int h, unsigned int interest,
 // The wait uses the token _PY_NOCTURNE_SIGINT_TOKEN of the queue. Another
 // thread just waits.
 #define _PY_NOCTURNE_SIGINT_TOKEN (~0ULL)
-struct n_event;
-extern long _PyOS_NocturneWaitEvents(int queue, struct n_event *events,
+struct kabi_event;
+extern long _PyOS_NocturneWaitEvents(int queue, struct kabi_event *events,
                                      unsigned long max,
                                      unsigned long long deadline);
 
 // 網の呼出し（net_resolve など）の cancel に渡す channel の端を *cancel に書く。
 // 待ちが SIGINT で止まるスレッドでは、SIGINT がその相手を閉じ、待ちは
-// N_ERR_CANCELLED で終わる。ほかのスレッドは -1（取り消し無し）。0 か、errno
+// KABI_ERR_CANCELLED で終わる。ほかのスレッドは -1（取り消し無し）。0 か、errno
 // つきの -1（SIGINT がもう来ていれば EINTR）。
 extern int _PyOS_NocturneNetCancel(int *cancel);
 

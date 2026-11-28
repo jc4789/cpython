@@ -5,7 +5,7 @@
    Lib/subprocess.py launches apps with _launch. The functions speak of
    Python's descriptors (Nocturne/descriptors.c) and of the paths of C:
    (docs/nocturne-native-abi.md §3). A failure is an OSError whose errno is the
-   N_ERR_* code, which libc's errno.h names.
+   KABI_ERR_* code, which libc's errno.h names.
 
    Nocturne has no modes, links, fork or exec, so what Python's os has for them
    is not here. A name never has a link to follow, so follow_symlinks changes
@@ -303,7 +303,7 @@ stat_result_make(nocturne_state *state, const struct _Py_stat_struct *st)
 }
 
 static PyObject *
-stat_result_of_entry(nocturne_state *state, const struct n_entry *entry)
+stat_result_of_entry(nocturne_state *state, const struct kabi_entry *entry)
 {
     struct _Py_stat_struct st;
     _Py_entry_stat(entry, &st);
@@ -589,7 +589,7 @@ nocturne_listdir(PyObject *module, PyObject *args, PyObject *kwargs)
     }
     PyObject *result = NULL;
     char folder[_PY_PATH_MAX];
-    struct n_entry *entries = NULL;
+    struct kabi_entry *entries = NULL;
     n_result count = 0;
     if (path_complete(&path, folder) < 0) {
         goto done;
@@ -640,8 +640,8 @@ nocturne_mkdir(PyObject *module, PyObject *args, PyObject *kwargs)
     return result;
 }
 
-/* Removes the entry path names if it is of kind (N_KIND_FOLDER or
-   N_KIND_DOCUMENT); one of the other kind fails with mismatch. */
+/* Removes the entry path names if it is of kind (KABI_KIND_FOLDER or
+   KABI_KIND_DOCUMENT); one of the other kind fails with mismatch. */
 static PyObject *
 remove_entry(PyObject *args, PyObject *kwargs, const char *format, uint32_t kind, int mismatch)
 {
@@ -654,7 +654,7 @@ remove_entry(PyObject *args, PyObject *kwargs, const char *format, uint32_t kind
     PyObject *result = NULL;
     char full[_PY_PATH_MAX];
     if (dir_fd_unavailable(dir_fd) == 0 && path_complete(&path, full) == 0) {
-        struct n_entry entry;
+        struct kabi_entry entry;
         n_result r;
         Py_BEGIN_ALLOW_THREADS
         r = n_entry_info(full, &entry);
@@ -671,19 +671,19 @@ remove_entry(PyObject *args, PyObject *kwargs, const char *format, uint32_t kind
 static PyObject *
 nocturne_rmdir(PyObject *module, PyObject *args, PyObject *kwargs)
 {
-    return remove_entry(args, kwargs, "O&|$O:rmdir", N_KIND_FOLDER, N_ERR_NOT_FOLDER);
+    return remove_entry(args, kwargs, "O&|$O:rmdir", KABI_KIND_FOLDER, KABI_ERR_NOT_FOLDER);
 }
 
 static PyObject *
 nocturne_remove(PyObject *module, PyObject *args, PyObject *kwargs)
 {
-    return remove_entry(args, kwargs, "O&|$O:remove", N_KIND_DOCUMENT, N_ERR_IS_FOLDER);
+    return remove_entry(args, kwargs, "O&|$O:remove", KABI_KIND_DOCUMENT, KABI_ERR_IS_FOLDER);
 }
 
 static PyObject *
 nocturne_unlink(PyObject *module, PyObject *args, PyObject *kwargs)
 {
-    return remove_entry(args, kwargs, "O&|$O:unlink", N_KIND_DOCUMENT, N_ERR_IS_FOLDER);
+    return remove_entry(args, kwargs, "O&|$O:unlink", KABI_KIND_DOCUMENT, KABI_ERR_IS_FOLDER);
 }
 
 /* rename never replaces an entry (FileExistsError), as on Windows; replace
@@ -875,7 +875,7 @@ nocturne_truncate(PyObject *module, PyObject *args, PyObject *kwargs)
     else if (path_complete(&path, full) == 0) {
         n_result r;
         Py_BEGIN_ALLOW_THREADS
-        n_handle h = n_document_open(full, N_DOCUMENT_EDIT);
+        n_handle h = n_document_open(full, KABI_DOCUMENT_EDIT);
         r = h;
         if (h >= 0) {
             r = n_document_set_size(h, (uint64_t)length);
@@ -1181,7 +1181,7 @@ typedef struct {
     PyObject *name;
     PyObject *path;
     PyObject *stat;               /* made by the first stat() */
-    struct n_entry entry;
+    struct kabi_entry entry;
 } DirEntry;
 
 static void
@@ -1223,7 +1223,7 @@ DirEntry_is_dir(PyObject *op, PyObject *args, PyObject *kwargs)
     if (DirEntry_follow(args, kwargs, "|$p:is_dir") < 0) {
         return NULL;
     }
-    return PyBool_FromLong(((DirEntry *)op)->entry.kind == N_KIND_FOLDER);
+    return PyBool_FromLong(((DirEntry *)op)->entry.kind == KABI_KIND_FOLDER);
 }
 
 static PyObject *
@@ -1232,7 +1232,7 @@ DirEntry_is_file(PyObject *op, PyObject *args, PyObject *kwargs)
     if (DirEntry_follow(args, kwargs, "|$p:is_file") < 0) {
         return NULL;
     }
-    return PyBool_FromLong(((DirEntry *)op)->entry.kind == N_KIND_DOCUMENT);
+    return PyBool_FromLong(((DirEntry *)op)->entry.kind == KABI_KIND_DOCUMENT);
 }
 
 static PyObject *
@@ -1309,7 +1309,7 @@ typedef struct {
     PyObject_HEAD
     path_arg path;                /* what scandir was given */
     char *folder;                 /* its complete path */
-    struct n_entry *batch;
+    struct kabi_entry *batch;
     Py_ssize_t batch_at, batch_count;
     uint64_t next;                /* the index of the next entry to list */
     bool last;                    /* the batch is the folder's last */
@@ -1386,7 +1386,7 @@ ScandirIterator_iternext(PyObject *op)
     ScandirIterator *it = (ScandirIterator *)op;
     for (;;) {
         if (it->batch_at < it->batch_count) {
-            const struct n_entry *e = &it->batch[it->batch_at++];
+            const struct kabi_entry *e = &it->batch[it->batch_at++];
             nocturne_state *state = type_state(op);
             if (state == NULL) {
                 return NULL;
@@ -1545,19 +1545,19 @@ launch_app(const char *program, const char **arguments, uint32_t argument_count,
         if (standard[i] >= 0) {
             streams[i] = _Py_fd_handle(standard[i]);
             if (streams[i] < 0) {
-                return -N_ERR_NO_HANDLE;
+                return -KABI_ERR_NO_HANDLE;
             }
         }
     }
-    int32_t *handles = PyMem_RawMalloc(((size_t)given_count + N_CAP_COUNT) * sizeof *handles);
+    int32_t *handles = PyMem_RawMalloc(((size_t)given_count + KABI_CAP_COUNT) * sizeof *handles);
     if (handles == NULL) {
-        return -N_ERR_NO_MEMORY;
+        return -KABI_ERR_NO_MEMORY;
     }
     for (uint32_t i = 0; i < given_count; i++) {
         handles[i] = given[i];
     }
     uint32_t caps = (uint32_t)n_caps_list(handles + given_count);
-    struct n_launch launch = {
+    struct kabi_launch launch = {
         .arguments = arguments,
         .environment = environment_strings,
         .handles = handles,
@@ -1585,13 +1585,13 @@ enum wait_outcome {
 
 /* Waits for the app's end until deadline. Called without the GIL. */
 static enum wait_outcome
-wait_app(n_handle app, uint64_t deadline, struct n_app_end *end, n_result *error)
+wait_app(n_handle app, uint64_t deadline, struct kabi_app_end *end, n_result *error)
 {
     for (;;) {
         n_result r;
         int woke = 1;
         if (_PyOS_NocturneInterruptible()) {
-            woke = _PyOS_NocturneWait(app, N_EVENT_APP_ENDED, NULL, 0, deadline);
+            woke = _PyOS_NocturneWait(app, KABI_EVENT_APP_ENDED, NULL, 0, deadline);
             r = n_app_result(app, 0, end);
         }
         else {
@@ -1600,7 +1600,7 @@ wait_app(n_handle app, uint64_t deadline, struct n_app_end *end, n_result *error
         if (r >= 0) {
             return WAIT_ENDED;
         }
-        if (r != -N_ERR_NOT_READY && r != -N_ERR_TIMEOUT) {
+        if (r != -KABI_ERR_NOT_READY && r != -KABI_ERR_TIMEOUT) {
             *error = r;
             return WAIT_FAILED;
         }
@@ -1723,14 +1723,14 @@ done:
    SIGSEGV (an invalid access to storage), a stop SIGTERM (a termination
    request). os.app_end says exactly how it ended. */
 static int
-returncode_of(const struct n_app_end *end)
+returncode_of(const struct kabi_app_end *end)
 {
     switch (end->kind) {
-    case N_APP_END_EXITED:
+    case KABI_APP_END_EXITED:
         return end->exited.code;
-    case N_APP_END_ABORTED:
+    case KABI_APP_END_ABORTED:
         return -SIGABRT;
-    case N_APP_END_FAULT:
+    case KABI_APP_END_FAULT:
         /* AMD64 APM Vol. 2, Table 8-1 */
         switch (end->fault.vector) {
         case 0: case 4: case 16: case 19:   /* #DE, #OF, #MF, #XF */
@@ -1740,9 +1740,9 @@ returncode_of(const struct n_app_end *end)
         default:
             return -SIGSEGV;
         }
-    case N_APP_END_FOREIGN_CALL:
+    case KABI_APP_END_FOREIGN_CALL:
         return -SIGILL;
-    case N_APP_END_RESOURCE:
+    case KABI_APP_END_RESOURCE:
         return -SIGSEGV;
     default:
         return -SIGTERM;
@@ -1773,7 +1773,7 @@ static PyStructSequence_Field app_end_fields[] = {
 
 static PyStructSequence_Desc app_end_desc = {
     "os.app_end",
-    "app_end: how an app ended (struct n_app_end of common/abi.h).\n\n"
+    "app_end: how an app ended (struct kabi_app_end of common/abi.h).\n\n"
     "As a tuple: (kind, returncode). The other attributes are None where the\n"
     "kind gives them no value.",
     app_end_fields,
@@ -1781,50 +1781,50 @@ static PyStructSequence_Desc app_end_desc = {
 };
 
 static PyObject *
-app_end_make(nocturne_state *state, const struct n_app_end *end)
+app_end_make(nocturne_state *state, const struct kabi_app_end *end)
 {
     static const char *const kinds[] = {
-        [N_APP_END_EXITED] = "exited", [N_APP_END_ABORTED] = "aborted", [N_APP_END_FAULT] = "fault",
-        [N_APP_END_RESOURCE] = "resource", [N_APP_END_FOREIGN_CALL] = "foreign_call", [N_APP_END_STOPPED] = "stopped",
+        [KABI_APP_END_EXITED] = "exited", [KABI_APP_END_ABORTED] = "aborted", [KABI_APP_END_FAULT] = "fault",
+        [KABI_APP_END_RESOURCE] = "resource", [KABI_APP_END_FOREIGN_CALL] = "foreign_call", [KABI_APP_END_STOPPED] = "stopped",
     };
     static const char *const reasons[] = {
-        [N_APP_STOP_ASKED] = "asked", [N_APP_STOP_SESSION] = "session", [N_APP_STOP_POWER] = "power",
+        [KABI_APP_STOP_ASKED] = "asked", [KABI_APP_STOP_SESSION] = "session", [KABI_APP_STOP_POWER] = "power",
     };
     PyObject *items[APP_END_FIELDS] = {NULL};
     int failed = 0;
 #define PUT(i, value) (failed |= (items[i] = (value)) == NULL)
-    const struct n_app_place *at = NULL;
+    const struct kabi_app_place *at = NULL;
     char text[256];
     size_t length = n_app_end_text(text, sizeof text, end);
     PUT(0, PyUnicode_FromString(end->kind < Py_ARRAY_LENGTH(kinds) && kinds[end->kind] ? kinds[end->kind] : "unknown"));
     PUT(1, PyLong_FromLong(returncode_of(end)));
     switch (end->kind) {
-    case N_APP_END_EXITED:
+    case KABI_APP_END_EXITED:
         PUT(2, PyLong_FromLong(end->exited.code));
         break;
-    case N_APP_END_ABORTED:
+    case KABI_APP_END_ABORTED:
         PUT(3, PyLong_FromLongLong(end->aborted.thread));
         PUT(4, PyLong_FromUnsignedLongLong(end->aborted.from));
         break;
-    case N_APP_END_FAULT:
+    case KABI_APP_END_FAULT:
         at = &end->fault.at;
         PUT(6, PyLong_FromUnsignedLongLong(end->fault.address));
         PUT(7, PyLong_FromUnsignedLong(end->fault.vector));
         PUT(8, PyLong_FromUnsignedLongLong(end->fault.error));
         break;
-    case N_APP_END_RESOURCE:
+    case KABI_APP_END_RESOURCE:
         at = &end->resource.at;
         PUT(6, PyLong_FromUnsignedLongLong(end->resource.address));
-        if (end->resource.resource == N_APP_RESOURCE_STACK) {
+        if (end->resource.resource == KABI_APP_RESOURCE_STACK) {
             PUT(9, PyUnicode_FromString("stack"));
         }
         break;
-    case N_APP_END_FOREIGN_CALL:
+    case KABI_APP_END_FOREIGN_CALL:
         at = &end->foreign_call.at;
         PUT(10, PyLong_FromUnsignedLongLong(end->foreign_call.call));
         break;
-    case N_APP_END_STOPPED: {
-        const struct n_app_stopped *s = &end->stopped;
+    case KABI_APP_END_STOPPED: {
+        const struct kabi_app_stopped *s = &end->stopped;
         PUT(11, PyUnicode_FromString(s->reason < Py_ARRAY_LENGTH(reasons) && reasons[s->reason] ? reasons[s->reason]
                                                                                               : "unknown"));
         PUT(12, PyLong_FromLongLong(s->by_app));
@@ -1862,7 +1862,7 @@ nocturne__wait(PyObject *module, PyObject *args)
     if (!PyArg_ParseTuple(args, "i|O:_wait", &app, &timeout)) {
         return NULL;
     }
-    uint64_t deadline = N_CLOCK_NEVER;
+    uint64_t deadline = KABI_CLOCK_NEVER;
     if (timeout != Py_None) {
         PyTime_t ns;
         if (_PyTime_FromSecondsObject(&ns, timeout, _PyTime_ROUND_TIMEOUT) < 0) {
@@ -1871,7 +1871,7 @@ nocturne__wait(PyObject *module, PyObject *args)
         deadline = ns <= 0 ? n_clock_monotonic() : n_clock_after((uint64_t)ns);
     }
     for (;;) {
-        struct n_app_end end;
+        struct kabi_app_end end;
         n_result error = 0;
         enum wait_outcome outcome;
         Py_BEGIN_ALLOW_THREADS
@@ -1901,7 +1901,7 @@ nocturne__stop(PyObject *module, PyObject *arg)
     if (fd_argument(arg, &app) < 0) {
         return NULL;
     }
-    n_result r = n_app_stop(app, N_APP_STOP_TREE);
+    n_result r = n_app_stop(app, KABI_APP_STOP_TREE);
     return r < 0 ? raise_result(r, NULL) : Py_NewRef(Py_None);
 }
 
@@ -1917,7 +1917,7 @@ nocturne__handle_close(PyObject *module, PyObject *arg)
 }
 
 /* _app_open(id): a handle of the running app of identifier id, one this app
-   may touch (§13): it reports N_EVENT_APP_ENDED when the app ends. */
+   may touch (§13): it reports KABI_EVENT_APP_ENDED when the app ends. */
 static PyObject *
 nocturne__app_open(PyObject *module, PyObject *arg)
 {
@@ -2009,7 +2009,7 @@ nocturne_system(PyObject *module, PyObject *args, PyObject *kwargs)
     }
     const char *argv[] = {"sh", "-c", PyBytes_AS_STRING(command), NULL};
     const int standard[3] = {0, 1, 2};
-    struct n_app_end end = {.kind = N_APP_END_EXITED};
+    struct kabi_app_end end = {.kind = KABI_APP_END_EXITED};
     n_result error = 0;
     enum wait_outcome outcome = WAIT_FAILED;
     Py_BEGIN_ALLOW_THREADS
@@ -2018,10 +2018,10 @@ nocturne_system(PyObject *module, PyObject *args, PyObject *kwargs)
         error = app;
     }
     else {
-        outcome = wait_app(app, N_CLOCK_NEVER, &end, &error);
+        outcome = wait_app(app, KABI_CLOCK_NEVER, &end, &error);
         if (outcome == WAIT_INTERRUPTED) {
-            n_app_stop(app, N_APP_STOP_TREE);
-            n_app_result(app, N_CLOCK_NEVER, &end);
+            n_app_stop(app, KABI_APP_STOP_TREE);
+            n_app_result(app, KABI_CLOCK_NEVER, &end);
         }
         n_handle_close(app);
     }
@@ -2065,12 +2065,12 @@ nocturne_getppid(PyObject *module, PyObject *Py_UNUSED(ignored))
 static PyObject *
 nocturne_getlogin(PyObject *module, PyObject *Py_UNUSED(ignored))
 {
-    struct n_identity self;
+    struct kabi_identity self;
     n_result r = n_identity_self(&self);
     if (r < 0) {
         return raise_result(r, NULL);
     }
-    struct n_account *accounts = NULL;
+    struct kabi_account *accounts = NULL;
     Py_BEGIN_ALLOW_THREADS
     r = n_accounts_list(&accounts);
     Py_END_ALLOW_THREADS
@@ -2088,7 +2088,7 @@ nocturne_getlogin(PyObject *module, PyObject *Py_UNUSED(ignored))
     }
     free(accounts);
     if (name == NULL && !PyErr_Occurred()) {
-        raise_result(-N_ERR_NOT_FOUND, NULL);
+        raise_result(-KABI_ERR_NOT_FOUND, NULL);
     }
     return name;
 }
@@ -2109,7 +2109,7 @@ nocturne__temp_folder(PyObject *module, PyObject *Py_UNUSED(ignored))
 static PyObject *
 nocturne_cpu_count(PyObject *module, PyObject *Py_UNUSED(ignored))
 {
-    struct n_cpuinfo info;
+    struct kabi_cpuinfo info;
     if (cpu_info(&info) < 0 || info.online_cpus == 0) {
         Py_RETURN_NONE;
     }

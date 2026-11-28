@@ -19,7 +19,7 @@ extsep = '.'
 sep = '\\'
 pathsep = ';'
 altsep = '/'
-# The system's programs (N_FOLDER_SYSTEM); shutil.which also looks in the
+# The system's programs (KABI_FOLDER_SYSTEM); shutil.which also looks in the
 # folders of the apps, as the shell does.
 defpath = 'C:\\Nocturne\\System'
 

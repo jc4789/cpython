@@ -322,15 +322,15 @@ nocturne_interrupt_watcher(void *arg)
         if (__atomic_load_n(&nocturne_sigint.pausers, __ATOMIC_ACQUIRE)) {
             __atomic_store_n(&nocturne_sigint.parked, 1, __ATOMIC_RELEASE);
             wake_address(&nocturne_sigint.parked, 0);
-            wait_on_address(&nocturne_sigint.generation, generation, N_CLOCK_NEVER);
+            wait_on_address(&nocturne_sigint.generation, generation, KABI_CLOCK_NEVER);
             continue;
         }
         __atomic_store_n(&nocturne_sigint.parked, 0, __ATOMIC_RELEASE);
         if (n_events_watch_address(queue, &nocturne_sigint.generation, generation, 2) < 0) {
             continue;
         }
-        struct n_event events[2];
-        n_events_wait(queue, events, 2, N_CLOCK_NEVER);
+        struct kabi_event events[2];
+        n_events_wait(queue, events, 2, KABI_CLOCK_NEVER);
         n_events_unwatch(queue, 2);
         if (__atomic_load_n(&nocturne_sigint.generation, __ATOMIC_ACQUIRE) != generation) {
             continue;
@@ -346,7 +346,7 @@ static void
 nocturne_interrupts_start(void)
 {
     n_handle interrupts = n_interrupts();
-    if (interrupts < 0 || n_handle_kind(interrupts) != N_KIND_CHANNEL) {
+    if (interrupts < 0 || n_handle_kind(interrupts) != KABI_KIND_CHANNEL) {
         return;
     }
     n_handle queue = n_events_create();
@@ -355,7 +355,7 @@ nocturne_interrupts_start(void)
     }
     nocturne_sigint.stop = 0;
     n_result tid = -1;
-    if (n_events_watch(queue, interrupts, N_EVENT_RECEIVABLE, 1) >= 0) {
+    if (n_events_watch(queue, interrupts, KABI_EVENT_RECEIVABLE, 1) >= 0) {
         tid = thread_create(nocturne_interrupt_watcher, (void *)(intptr_t)queue);
     }
     if (tid > 0) {
@@ -2240,7 +2240,7 @@ _PyOS_NocturneWait(int h, unsigned int interest, volatile unsigned int *address,
             if (queue < 0) {
                 return 1;
             }
-            struct n_event event;
+            struct kabi_event event;
             n_result count = n_events_watch(queue, h, interest, 1);
             if (count >= 0) {
                 count = n_events_wait(queue, &event, 1, deadline);
@@ -2252,7 +2252,7 @@ _PyOS_NocturneWait(int h, unsigned int interest, volatile unsigned int *address,
             n_sleep_until(deadline);
             return 0;
         }
-        return wait_on_address(address, expected, deadline) == -N_ERR_TIMEOUT ? 0 : 1;
+        return wait_on_address(address, expected, deadline) == -KABI_ERR_TIMEOUT ? 0 : 1;
     }
     /* A delivery after this read changes the word; one before it has set
        the tripped flag already. */
@@ -2278,7 +2278,7 @@ _PyOS_NocturneWait(int h, unsigned int interest, volatile unsigned int *address,
         result = -1;
         goto done;
     }
-    struct n_event events[3];
+    struct kabi_event events[3];
     n_result count = n_events_wait(queue, events, 3, deadline);
     if (__atomic_load_n(&nocturne_sigint.delivered, __ATOMIC_ACQUIRE) != seen) {
         result = -1;
@@ -2294,7 +2294,7 @@ done:
 }
 
 long
-_PyOS_NocturneWaitEvents(int queue, struct n_event *events, unsigned long max,
+_PyOS_NocturneWaitEvents(int queue, struct kabi_event *events, unsigned long max,
                          unsigned long long deadline)
 {
     if (!_PyOS_NocturneInterruptible()) {
@@ -2322,7 +2322,7 @@ _PyOS_NocturneWaitEvents(int queue, struct n_event *events, unsigned long max,
     return kept;
 }
 
-/* 網の呼出しの待ちは、cancel に渡した channel の端の相手が閉じると N_ERR_CANCELLED で終わる（nocturne.h の網）。
+/* 網の呼出しの待ちは、cancel に渡した channel の端の相手が閉じると KABI_ERR_CANCELLED で終わる（nocturne.h の網）。
    主のスレッドの端は net_end で、SIGINT の配りが相手の net_peer を閉じる。閉じた相手は閉じたままなので、その後の
    呼出しは新しい組を作る。 */
 int
@@ -2364,7 +2364,7 @@ _PyOS_NocturneInterruptsPause(void)
     __atomic_add_fetch(&nocturne_sigint.generation, 1, __ATOMIC_ACQ_REL);
     wake_address(&nocturne_sigint.generation, 0);
     while (!__atomic_load_n(&nocturne_sigint.parked, __ATOMIC_ACQUIRE)) {
-        wait_on_address(&nocturne_sigint.parked, 0, N_CLOCK_NEVER);
+        wait_on_address(&nocturne_sigint.parked, 0, KABI_CLOCK_NEVER);
     }
 }
 

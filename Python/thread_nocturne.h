@@ -103,7 +103,7 @@ void _Py_NO_RETURN
 PyThread_hang_thread(void)
 {
     for (;;) {
-        n_sleep_until(N_CLOCK_NEVER);
+        n_sleep_until(KABI_CLOCK_NEVER);
     }
 }
 

@@ -2,9 +2,9 @@
 
    select.select waits in one of the system's event queues for the handles of
    the descriptors it is given (Nocturne/descriptors.h): a descriptor is
-   readable when its handle reports N_EVENT_RECEIVABLE or N_EVENT_CLOSED, or
+   readable when its handle reports KABI_EVENT_RECEIVABLE or KABI_EVENT_CLOSED, or
    when bytes it received are waiting to be read, and writable when its handle
-   reports N_EVENT_SENDABLE or N_EVENT_CLOSED. A document's descriptor is
+   reports KABI_EVENT_SENDABLE or KABI_EVENT_CLOSED. A document's descriptor is
    always both, and a socket that never connected answers at once. Nothing is
    ever exceptional: the system has no urgent data.
 
@@ -24,7 +24,7 @@
 
 struct entry {
     PyObject *object;             /* borrowed from the caller's sequence */
-    int ready;                    /* N_EVENT_* */
+    int ready;                    /* KABI_EVENT_* */
     n_handle handle;              /* -1: nothing to wait for */
 };
 
@@ -111,7 +111,7 @@ select_select(PyObject *module, PyObject *args)
     if (!PyArg_UnpackTuple(args, "select", 3, 4, &rlist, &wlist, &xlist, &timeout_object)) {
         return NULL;
     }
-    uint64_t deadline = N_CLOCK_NEVER;
+    uint64_t deadline = KABI_CLOCK_NEVER;
     if (timeout_object != Py_None) {
         PyTime_t timeout;
         if (_PyTime_FromSecondsObject(&timeout, timeout_object, _PyTime_ROUND_TIMEOUT) < 0) {
@@ -132,7 +132,7 @@ select_select(PyObject *module, PyObject *args)
     struct entry *r = NULL, *w = NULL, *x = NULL;
     Py_ssize_t nr = 0, nw = 0, nx = 0;
     struct watched *list = NULL;
-    struct n_event *events = NULL;
+    struct kabi_event *events = NULL;
     n_handle queue = -1;
     if (read_entries(rlist, &r, &nr, &rfast) < 0 || read_entries(wlist, &w, &nw, &wfast) < 0 ||
         read_entries(xlist, &x, &nx, &xfast) < 0) {
@@ -141,7 +141,7 @@ select_select(PyObject *module, PyObject *args)
 
     /* each handle once, with what any of its descriptors waits for */
     list = PyMem_New(struct watched, nr + nw + 1);
-    events = PyMem_New(struct n_event, nr + nw + 1);
+    events = PyMem_New(struct kabi_event, nr + nw + 1);
     if (list == NULL || events == NULL) {
         PyErr_NoMemory();
         goto done;
@@ -149,15 +149,15 @@ select_select(PyObject *module, PyObject *args)
     Py_ssize_t count = 0;
     bool ready_now = false;
     for (Py_ssize_t i = 0; i < nr; i++) {
-        ready_now |= (r[i].ready & (N_EVENT_RECEIVABLE | N_EVENT_CLOSED)) != 0;
+        ready_now |= (r[i].ready & (KABI_EVENT_RECEIVABLE | KABI_EVENT_CLOSED)) != 0;
         if (r[i].handle >= 0) {
-            list[count++] = (struct watched){.handle = r[i].handle, .interest = N_EVENT_RECEIVABLE | N_EVENT_CLOSED};
+            list[count++] = (struct watched){.handle = r[i].handle, .interest = KABI_EVENT_RECEIVABLE | KABI_EVENT_CLOSED};
         }
     }
     for (Py_ssize_t i = 0; i < nw; i++) {
-        ready_now |= (w[i].ready & (N_EVENT_SENDABLE | N_EVENT_CLOSED)) != 0;
+        ready_now |= (w[i].ready & (KABI_EVENT_SENDABLE | KABI_EVENT_CLOSED)) != 0;
         if (w[i].handle >= 0) {
-            list[count++] = (struct watched){.handle = w[i].handle, .interest = N_EVENT_SENDABLE | N_EVENT_CLOSED};
+            list[count++] = (struct watched){.handle = w[i].handle, .interest = KABI_EVENT_SENDABLE | KABI_EVENT_CLOSED};
         }
     }
     qsort(list, (size_t)count, sizeof *list, by_handle);
@@ -205,9 +205,9 @@ select_select(PyObject *module, PyObject *args)
         }
         break;
     }
-    PyObject *readable = ready_list(r, nr, list, distinct, N_EVENT_RECEIVABLE | N_EVENT_CLOSED);
+    PyObject *readable = ready_list(r, nr, list, distinct, KABI_EVENT_RECEIVABLE | KABI_EVENT_CLOSED);
     PyObject *writable = readable == NULL ? NULL
-                         : ready_list(w, nw, list, distinct, N_EVENT_SENDABLE | N_EVENT_CLOSED);
+                         : ready_list(w, nw, list, distinct, KABI_EVENT_SENDABLE | KABI_EVENT_CLOSED);
     if (writable != NULL) {
         result = Py_BuildValue("(NN[])", readable, writable);
     }

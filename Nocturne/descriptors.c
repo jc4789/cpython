@@ -31,7 +31,7 @@
 
 struct open_file {
     n_handle handle;              /* -1: a socket with no handle yet */
-    int kind;                     /* N_KIND_* */
+    int kind;                     /* KABI_KIND_* */
     bool readable;
     bool writable;
     bool append;                  /* every write goes to the document's end */
@@ -65,7 +65,7 @@ int
 _Py_complete_path(const char *name, char out[_PY_PATH_MAX])
 {
     n_result r = n_path_complete(name, out, _PY_PATH_MAX);
-    if (r == -N_ERR_TOO_LARGE) {
+    if (r == -KABI_ERR_TOO_LARGE) {
         errno = ENAMETOOLONG;
         return -1;
     }
@@ -76,11 +76,11 @@ _Py_complete_path(const char *name, char out[_PY_PATH_MAX])
    system checks the user it belongs to when it is opened. C: keeps one time,
    the modified time. */
 void
-_Py_entry_stat(const struct n_entry *entry, struct _Py_stat_struct *status)
+_Py_entry_stat(const struct kabi_entry *entry, struct _Py_stat_struct *status)
 {
     memset(status, 0, sizeof *status);
     status->st_ino = entry->id;
-    status->st_mode = entry->kind == N_KIND_FOLDER ? S_IFDIR | 0777 : S_IFREG | 0666;
+    status->st_mode = entry->kind == KABI_KIND_FOLDER ? S_IFDIR | 0777 : S_IFREG | 0666;
     status->st_nlink = 1;
     status->st_uid = entry->owner;
     status->st_size = (int64_t)entry->size;
@@ -97,7 +97,7 @@ _Py_path_stat(const char *name, struct _Py_stat_struct *status)
     if (_Py_complete_path(name, path) < 0) {
         return -1;
     }
-    struct n_entry entry;
+    struct kabi_entry entry;
     n_result r = n_entry_info(path, &entry);
     if (r < 0) {
         return fail(r);
@@ -183,7 +183,7 @@ table_standard(void)
             continue;
         }
         f->readable = f->writable = true;
-        f->append = kind == N_KIND_DOCUMENT && fd != 0;
+        f->append = kind == KABI_KIND_DOCUMENT && fd != 0;
         f->terminal = fd == 0 && n_terminal(h);
         table.files[fd] = f;
     }
@@ -253,14 +253,14 @@ _Py_fd_adopt(n_handle handle, int readable, int writable)
 static n_handle
 open_document(const char *path, int flags)
 {
-    int access = (flags & O_ACCMODE) == O_RDONLY ? N_DOCUMENT_READ : N_DOCUMENT_EDIT;
+    int access = (flags & O_ACCMODE) == O_RDONLY ? KABI_DOCUMENT_READ : KABI_DOCUMENT_EDIT;
     if ((flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL)) {
-        return n_document_open(path, N_DOCUMENT_CREATE);
+        return n_document_open(path, KABI_DOCUMENT_CREATE);
     }
     n_handle h = n_document_open(path, access);
-    if (h == -N_ERR_NOT_FOUND && (flags & O_CREAT)) {
-        h = n_document_open(path, N_DOCUMENT_CREATE);
-        if (h == -N_ERR_EXISTS) {
+    if (h == -KABI_ERR_NOT_FOUND && (flags & O_CREAT)) {
+        h = n_document_open(path, KABI_DOCUMENT_CREATE);
+        if (h == -KABI_ERR_EXISTS) {
             h = n_document_open(path, access);  /* made meanwhile */
         }
     }
@@ -285,7 +285,7 @@ _Py_fd_open(const char *name, int flags)
     if (h < 0) {
         return fail(h);
     }
-    struct open_file *f = open_file_make(h, N_KIND_DOCUMENT);
+    struct open_file *f = open_file_make(h, KABI_KIND_DOCUMENT);
     if (f == NULL) {
         n_handle_close(h);
         return -1;
@@ -388,17 +388,17 @@ _Py_fd_poll(int fd, n_handle *handle)
     int ready = 0;
     *handle = -1;
     n_handle h = __atomic_load_n(&f->handle, __ATOMIC_ACQUIRE);
-    if (f->kind == N_KIND_DOCUMENT) {
-        ready = N_EVENT_RECEIVABLE | N_EVENT_SENDABLE;
+    if (f->kind == KABI_KIND_DOCUMENT) {
+        ready = KABI_EVENT_RECEIVABLE | KABI_EVENT_SENDABLE;
     }
     else if (h < 0) {
         /* a socket that never connected: its calls answer at once */
-        ready = N_EVENT_RECEIVABLE | N_EVENT_SENDABLE | N_EVENT_CLOSED;
+        ready = KABI_EVENT_RECEIVABLE | KABI_EVENT_SENDABLE | KABI_EVENT_CLOSED;
     }
     else {
         PyMutex_Lock(&f->lock);
         if (f->pending != NULL) {
-            ready = N_EVENT_RECEIVABLE;
+            ready = KABI_EVENT_RECEIVABLE;
         }
         PyMutex_Unlock(&f->lock);
         *handle = h;
@@ -507,7 +507,7 @@ take_pending(struct open_file *f, char *buf, size_t count)
 static int
 wait_receivable(n_handle h)
 {
-    if (_PyOS_NocturneWait(h, N_EVENT_RECEIVABLE | N_EVENT_CLOSED, NULL, 0, N_CLOCK_NEVER) < 0) {
+    if (_PyOS_NocturneWait(h, KABI_EVENT_RECEIVABLE | KABI_EVENT_CLOSED, NULL, 0, KABI_CLOCK_NEVER) < 0) {
         errno = EINTR;
         return -1;
     }
@@ -527,11 +527,11 @@ read_socket(struct open_file *f, char *buf, size_t count)
     }
     for (;;) {
         bool interruptible = f->blocking && _PyOS_NocturneInterruptible();
-        uint64_t deadline = f->blocking && !interruptible ? N_CLOCK_NEVER : 0;
-        n_result r = f->kind == N_KIND_TCP
+        uint64_t deadline = f->blocking && !interruptible ? KABI_CLOCK_NEVER : 0;
+        n_result r = f->kind == KABI_KIND_TCP
             ? tcp_recv(h, buf, count, deadline)
             : udp_receive(h, buf, count, NULL, deadline, -1);
-        if ((r == -N_ERR_NOT_READY || r == -N_ERR_TIMEOUT) && deadline == 0) {
+        if ((r == -KABI_ERR_NOT_READY || r == -KABI_ERR_TIMEOUT) && deadline == 0) {
             if (!interruptible) {
                 errno = EAGAIN;
                 return -1;
@@ -553,24 +553,24 @@ read_channel(struct open_file *f, char *buf, size_t count)
 {
     for (;;) {
         bool interruptible = f->blocking && _PyOS_NocturneInterruptible();
-        int flags = f->blocking && !interruptible ? N_CHANNEL_WAIT : 0;
-        n_result r = f->kind == N_KIND_CONSOLE
+        int flags = f->blocking && !interruptible ? KABI_CHANNEL_WAIT : 0;
+        n_result r = f->kind == KABI_KIND_CONSOLE
             ? n_console_receive(f->handle, buf, count, flags)
             : n_channel_receive(f->handle, buf, count, flags, NULL);
-        if (r == 0 && f->kind != N_KIND_CONSOLE) {
+        if (r == 0 && f->kind != KABI_KIND_CONSOLE) {
             continue;  /* an empty message carries no bytes */
         }
-        if (r == -N_ERR_CLOSED) {
+        if (r == -KABI_ERR_CLOSED) {
             return 0;
         }
-        if (r == -N_ERR_NOT_READY && interruptible) {
+        if (r == -KABI_ERR_NOT_READY && interruptible) {
             if (wait_receivable(f->handle) < 0) {
                 return -1;
             }
             continue;
         }
-        if (r == -N_ERR_TOO_LARGE && f->kind != N_KIND_CONSOLE) {
-            n_result size = n_channel_receive(f->handle, NULL, 0, N_CHANNEL_PEEK, NULL);
+        if (r == -KABI_ERR_TOO_LARGE && f->kind != KABI_KIND_CONSOLE) {
+            n_result size = n_channel_receive(f->handle, NULL, 0, KABI_CHANNEL_PEEK, NULL);
             if (size < 0) {
                 return fail(size);
             }
@@ -656,7 +656,7 @@ _Py_fd_read(int fd, void *buf, size_t count)
     else if (count == 0) {
         r = 0;
     }
-    else if (f->kind == N_KIND_TCP || f->kind == N_KIND_UDP) {
+    else if (f->kind == KABI_KIND_TCP || f->kind == KABI_KIND_UDP) {
         r = read_socket(f, buf, count);
     }
     else {
@@ -664,7 +664,7 @@ _Py_fd_read(int fd, void *buf, size_t count)
         if (f->pending != NULL) {
             r = (Py_ssize_t)take_pending(f, buf, count);
         }
-        else if (f->kind == N_KIND_DOCUMENT) {
+        else if (f->kind == KABI_KIND_DOCUMENT) {
             n_result got = n_document_read_at(f->handle, f->position, buf, count);
             if (got > 0) {
                 f->position += (uint64_t)got;
@@ -693,7 +693,7 @@ write_document(struct open_file *f, const char *buf, size_t count)
     bool claimed = false;
     if (f->append) {
         /* the claim keeps other appenders from writing at the same end */
-        claimed = n_document_claim(f->handle, N_CLAIM_EXCLUSIVE, true) == 0;
+        claimed = n_document_claim(f->handle, KABI_CLAIM_EXCLUSIVE, true) == 0;
         n_result size = n_document_size(f->handle);
         if (size < 0) {
             if (claimed) {
@@ -733,18 +733,18 @@ write_socket(struct open_file *f, const char *buf, size_t count)
         errno = ENOTCONN;
         return -1;
     }
-    if (f->kind == N_KIND_UDP) {
+    if (f->kind == KABI_KIND_UDP) {
         errno = EDESTADDRREQ;
         return -1;
     }
     for (;;) {
         bool interruptible = f->blocking && _PyOS_NocturneInterruptible();
         n_result r = f->blocking && !interruptible
-            ? tcp_send_until(h, buf, count, N_CLOCK_NEVER)
+            ? tcp_send_until(h, buf, count, KABI_CLOCK_NEVER)
             : tcp_send_some(h, buf, count);
-        if (r == -N_ERR_NOT_READY && interruptible) {
-            if (_PyOS_NocturneWait(h, N_EVENT_SENDABLE | N_EVENT_CLOSED, NULL, 0,
-                                   N_CLOCK_NEVER) < 0) {
+        if (r == -KABI_ERR_NOT_READY && interruptible) {
+            if (_PyOS_NocturneWait(h, KABI_EVENT_SENDABLE | KABI_EVENT_CLOSED, NULL, 0,
+                                   KABI_CLOCK_NEVER) < 0) {
                 errno = EINTR;
                 return -1;
             }
@@ -766,12 +766,12 @@ _Py_fd_write(int fd, const void *buf, size_t count)
         errno = EBADF;
         r = -1;
     }
-    else if (f->kind == N_KIND_DOCUMENT) {
+    else if (f->kind == KABI_KIND_DOCUMENT) {
         PyMutex_Lock(&f->lock);
         r = write_document(f, buf, count);
         PyMutex_Unlock(&f->lock);
     }
-    else if (f->kind == N_KIND_TCP || f->kind == N_KIND_UDP) {
+    else if (f->kind == KABI_KIND_TCP || f->kind == KABI_KIND_UDP) {
         r = write_socket(f, buf, count);
     }
     else {
@@ -794,7 +794,7 @@ _Py_fd_seek(int fd, long long offset, int whence)
         return -1;
     }
     long long r = -1;
-    if (f->kind != N_KIND_DOCUMENT) {
+    if (f->kind != KABI_KIND_DOCUMENT) {
         errno = ESPIPE;
         goto done;
     }
@@ -865,8 +865,8 @@ _Py_fd_sync(int fd)
         return -1;
     }
     int r = 0;
-    if (f->kind == N_KIND_DOCUMENT) {
-        n_result committed = n_document_commit(f->handle, N_COMMIT_WAIT);
+    if (f->kind == KABI_KIND_DOCUMENT) {
+        n_result committed = n_document_commit(f->handle, KABI_COMMIT_WAIT);
         r = committed < 0 ? fail(committed) : 0;
     }
     else {
@@ -885,8 +885,8 @@ _Py_fd_stat(int fd, struct _Py_stat_struct *status)
         return -1;
     }
     int r = 0;
-    if (f->kind == N_KIND_DOCUMENT) {
-        struct n_entry entry;
+    if (f->kind == KABI_KIND_DOCUMENT) {
+        struct kabi_entry entry;
         n_result info = n_document_info(f->handle, &entry);
         if (info < 0) {
             r = fail(info);
@@ -897,8 +897,8 @@ _Py_fd_stat(int fd, struct _Py_stat_struct *status)
     }
     else {
         memset(status, 0, sizeof *status);
-        status->st_mode = f->terminal || f->kind == N_KIND_CONSOLE ? S_IFCHR | 0666
-                          : f->kind == N_KIND_TCP || f->kind == N_KIND_UDP ? S_IFSOCK | 0666
+        status->st_mode = f->terminal || f->kind == KABI_KIND_CONSOLE ? S_IFCHR | 0666
+                          : f->kind == KABI_KIND_TCP || f->kind == KABI_KIND_UDP ? S_IFSOCK | 0666
                           : S_IFIFO | 0666;
         status->st_nlink = 1;
     }
@@ -913,7 +913,7 @@ _Py_fd_isatty(int fd)
     if (f == NULL) {
         return -1;
     }
-    int r = f->terminal || f->kind == N_KIND_CONSOLE || n_terminal(f->handle);
+    int r = f->terminal || f->kind == KABI_KIND_CONSOLE || n_terminal(f->handle);
     open_file_put(f);
     return r;
 }

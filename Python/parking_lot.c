@@ -157,7 +157,7 @@ _PySemaphore_Wait(_PySemaphore *sema, PyTime_t timeout)
 #elif defined(__nocturne__)
     // As on Windows, a wait of the main thread stops for SIGINT
     // (_PyOS_NocturneWait).
-    uint64_t deadline = timeout < 0 ? N_CLOCK_NEVER : n_clock_after((uint64_t)timeout);
+    uint64_t deadline = timeout < 0 ? KABI_CLOCK_NEVER : n_clock_after((uint64_t)timeout);
     for (;;) {
         uint32_t count = __atomic_load_n(&sema->count, __ATOMIC_ACQUIRE);
         if (count > 0) {

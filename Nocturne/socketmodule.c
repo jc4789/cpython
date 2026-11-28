@@ -112,25 +112,25 @@ typedef struct {
     int fd;                       /* 閉じるか外した後は -1 */
     int family, type, proto;
     PyTime_t timeout;             /* -1：待つ、0：待たない */
-    struct n_net_endpoint bound;  /* bind() の端 */
+    struct kabi_net_endpoint bound;  /* bind() の端 */
     bool has_bound;
-    struct n_net_endpoint peer;   /* UDP の socket の connect() の相手 */
+    struct kabi_net_endpoint peer;   /* UDP の socket の connect() の相手 */
     bool has_peer;
     bool listener;                /* handle は TCP の listener（bind、listen） */
     bool listening;               /* listen() が来た */
     bool read_shut;               /* shutdown(SHUT_RD) */
     bool only_v6;                 /* AF_INET6：IPv6 だけ（IPV6_V6ONLY） */
     int reuse_address;
-    struct n_net_tcp_options options; /* handle の前に置いた TCP の選び */
+    struct kabi_net_tcp_options options; /* handle の前に置いた TCP の選び */
     bool options_kept;
 } sock_object;
 
 /* TCP の選びの初めの値（net_abi.h）。輪の大きさの 0 はシステムが決める大きさ。 */
-static const struct n_net_tcp_options tcp_options_start = {
-    .keepalive_idle = N_TCP_KEEPALIVE_START_IDLE,
-    .keepalive_interval = N_TCP_KEEPALIVE_START_INTERVAL,
-    .give_up = N_TCP_GIVE_UP_START,
-    .keepalive_probes = N_TCP_KEEPALIVE_START_PROBES,
+static const struct kabi_net_tcp_options tcp_options_start = {
+    .keepalive_idle = KABI_TCP_KEEPALIVE_START_IDLE,
+    .keepalive_interval = KABI_TCP_KEEPALIVE_START_INTERVAL,
+    .give_up = KABI_TCP_GIVE_UP_START,
+    .keepalive_probes = KABI_TCP_KEEPALIVE_START_PROBES,
 };
 
 /* ---- 誤り ---- */
@@ -140,9 +140,9 @@ static int
 net_errno(n_result r)
 {
     switch (r) {
-    case -N_ERR_TOO_LARGE: return EMSGSIZE;
-    case -N_ERR_NOT_READY: return EAGAIN;
-    case -N_ERR_NOT_FOUND: return EADDRNOTAVAIL;  /* この機械の住所でない */
+    case -KABI_ERR_TOO_LARGE: return EMSGSIZE;
+    case -KABI_ERR_NOT_READY: return EAGAIN;
+    case -KABI_ERR_NOT_FOUND: return EADDRNOTAVAIL;  /* この機械の住所でない */
     default: return (int)-r;
     }
 }
@@ -190,35 +190,35 @@ set_gaierror(socket_state *state, int code)
 static uint8_t
 ip_family(int family)
 {
-    return family == AF_INET6 ? N_NET_IPV6 : N_NET_IPV4;
+    return family == AF_INET6 ? KABI_NET_IPV6 : KABI_NET_IPV4;
 }
 
 static int
-address_family(const struct n_net_ip *ip)
+address_family(const struct kabi_net_ip *ip)
 {
-    return ip->family == N_NET_IPV6 ? AF_INET6 : AF_INET;
+    return ip->family == KABI_NET_IPV6 ? AF_INET6 : AF_INET;
 }
 
-static struct n_net_ip
+static struct kabi_net_ip
 ipv6_loopback(void)
 {
-    struct n_net_ip ip = {.family = N_NET_IPV6};
+    struct kabi_net_ip ip = {.family = KABI_NET_IPV6};
     ip.bytes[15] = 1;
     return ip;
 }
 
 /* IPv4-mapped の IPv6 の住所か（RFC 4291 の 2.5.5.2：::ffff:0:0/96）。 */
 static bool
-is_mapped(const struct n_net_ip *ip)
+is_mapped(const struct kabi_net_ip *ip)
 {
     static const uint8_t prefix[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
-    return ip->family == N_NET_IPV6 && memcmp(ip->bytes, prefix, sizeof prefix) == 0;
+    return ip->family == KABI_NET_IPV6 && memcmp(ip->bytes, prefix, sizeof prefix) == 0;
 }
 
-static struct n_net_ip
-mapped(const struct n_net_ip *v4)
+static struct kabi_net_ip
+mapped(const struct kabi_net_ip *v4)
 {
-    struct n_net_ip ip = {.family = N_NET_IPV6};
+    struct kabi_net_ip ip = {.family = KABI_NET_IPV6};
     ip.bytes[10] = ip.bytes[11] = 0xff;
     memcpy(ip.bytes + 12, v4->bytes, 4);
     return ip;
@@ -226,7 +226,7 @@ mapped(const struct n_net_ip *v4)
 
 /* 住所の文字（zone は付けない）。 */
 static PyObject *
-ip_text(struct n_net_ip ip)
+ip_text(struct kabi_net_ip ip)
 {
     char text[N_NET_IP_TEXT_BYTES];
     ip.zone = 0;
@@ -235,15 +235,15 @@ ip_text(struct n_net_ip ip)
 }
 
 /* 端を族 family の Python の住所に：AF_INET は (host, port)、AF_INET6 は (host, port, flowinfo, scope_id)。
-   AF_INET6 は IPv4 の端を IPv4-mapped の住所で、どの族でもない端（N_NET_ANY）を "::" で見せる。 */
+   AF_INET6 は IPv4 の端を IPv4-mapped の住所で、どの族でもない端（KABI_NET_ANY）を "::" で見せる。 */
 static PyObject *
-make_address(int family, const struct n_net_endpoint *e)
+make_address(int family, const struct kabi_net_endpoint *e)
 {
-    struct n_net_ip ip = e->ip;
-    if (ip.family == N_NET_ANY) {
-        ip = (struct n_net_ip){.family = ip_family(family)};
+    struct kabi_net_ip ip = e->ip;
+    if (ip.family == KABI_NET_ANY) {
+        ip = (struct kabi_net_ip){.family = ip_family(family)};
     }
-    else if (family == AF_INET6 && ip.family == N_NET_IPV4) {
+    else if (family == AF_INET6 && ip.family == KABI_NET_IPV4) {
         ip = mapped(&ip);
     }
     PyObject *host = ip_text(ip);
@@ -259,13 +259,13 @@ make_address(int family, const struct n_net_endpoint *e)
 /* 名前 name の族 family（AF_UNSPEC は両方）の住所を RFC 6724 の順で *out（PyMem_Free する）に。数か、gaierror（か
    Python の SIGINT の処理の例外）つきの -1。網のサービスの答えを GIL を放して待ち、Ctrl+C は待ちを取り消す。 */
 static Py_ssize_t
-resolve(socket_state *state, const char *name, int family, struct n_net_ip **out)
+resolve(socket_state *state, const char *name, int family, struct kabi_net_ip **out)
 {
-    uint32_t families = family == AF_INET ? N_DNS_FAMILY_IPV4 : family == AF_INET6 ? N_DNS_FAMILY_IPV6 : 0;
+    uint32_t families = family == AF_INET ? KABI_DNS_FAMILY_IPV4 : family == AF_INET6 ? KABI_DNS_FAMILY_IPV6 : 0;
     size_t cap = 8;
-    struct n_net_ip *list = NULL;
+    struct kabi_net_ip *list = NULL;
     for (;;) {
-        struct n_net_ip *grown = PyMem_Realloc(list, cap * sizeof *list);
+        struct kabi_net_ip *grown = PyMem_Realloc(list, cap * sizeof *list);
         if (grown == NULL) {
             PyMem_Free(list);
             PyErr_NoMemory();
@@ -283,7 +283,7 @@ resolve(socket_state *state, const char *name, int family, struct n_net_ip **out
             PyMem_Free(list);
             return -1;
         }
-        struct n_dns_result result;
+        struct kabi_dns_result result;
         n_result r;
         Py_BEGIN_ALLOW_THREADS
         r = net_resolve(name, families, list, cap, &result, NULL, cancel);
@@ -299,19 +299,19 @@ resolve(socket_state *state, const char *name, int family, struct n_net_ip **out
         }
         int code;
         switch (result.status) {
-        case N_DNS_CANCELLED:
+        case KABI_DNS_CANCELLED:
             if (PyErr_CheckSignals() < 0) {
                 PyMem_Free(list);
                 return -1;
             }
             continue;
-        case N_DNS_OK:
-        case N_DNS_NODATA: code = EAI_NODATA; break;
-        case N_DNS_NXDOMAIN: code = EAI_NONAME; break;
-        case N_DNS_SERVFAIL:
-        case N_DNS_TIMEOUT:
-        case N_DNS_UNREACHABLE: code = EAI_AGAIN; break;
-        case N_DNS_RESOURCE: code = EAI_MEMORY; break;
+        case KABI_DNS_OK:
+        case KABI_DNS_NODATA: code = EAI_NODATA; break;
+        case KABI_DNS_NXDOMAIN: code = EAI_NONAME; break;
+        case KABI_DNS_SERVFAIL:
+        case KABI_DNS_TIMEOUT:
+        case KABI_DNS_UNREACHABLE: code = EAI_AGAIN; break;
+        case KABI_DNS_RESOURCE: code = EAI_MEMORY; break;
         default: code = EAI_FAIL; break;
         }
         PyMem_Free(list);
@@ -339,7 +339,7 @@ host_name(PyObject *host, PyObject **bytes)
 /* 住所の組の host を族 family の住所に：''（どの住所でもない）、'<broadcast>'（IPv4 の limited broadcast）、住所の
    文字、引く名前。0 か、例外つきの -1。 */
 static int
-host_address(socket_state *state, PyObject *host, int family, struct n_net_ip *ip)
+host_address(socket_state *state, PyObject *host, int family, struct kabi_net_ip *ip)
 {
     PyObject *bytes;
     const char *name = host_name(host, &bytes);
@@ -348,7 +348,7 @@ host_address(socket_state *state, PyObject *host, int family, struct n_net_ip *i
     }
     int r = 0;
     if (name[0] == '\0') {
-        *ip = (struct n_net_ip){.family = ip_family(family)};
+        *ip = (struct kabi_net_ip){.family = ip_family(family)};
     }
     else if (strcmp(name, "<broadcast>") == 0) {
         if (family != AF_INET) {
@@ -366,7 +366,7 @@ host_address(socket_state *state, PyObject *host, int family, struct n_net_ip *i
         }
     }
     else {
-        struct n_net_ip *list;
+        struct kabi_net_ip *list;
         if (resolve(state, name, family, &list) < 0) {
             r = -1;
         }
@@ -382,7 +382,7 @@ host_address(socket_state *state, PyObject *host, int family, struct n_net_ip *i
 /* 族 family の Python の住所：AF_INET は (host, port)、AF_INET6 は (host, port[, flowinfo[, scope_id]])。0 か、
    例外つきの -1。 */
 static int
-parse_address(socket_state *state, int family, PyObject *object, const char *caller, struct n_net_endpoint *out)
+parse_address(socket_state *state, int family, PyObject *object, const char *caller, struct kabi_net_endpoint *out)
 {
     const char *name = family == AF_INET6 ? "AF_INET6" : "AF_INET";
     if (!PyTuple_Check(object)) {
@@ -409,43 +409,43 @@ parse_address(socket_state *state, int family, PyObject *object, const char *cal
         PyErr_Format(PyExc_OverflowError, "%s(): port must be 0-65535.", caller);
         return -1;
     }
-    struct n_net_ip ip;
+    struct kabi_net_ip ip;
     if (host_address(state, host, family, &ip) < 0) {
         return -1;
     }
     if (scope_id != 0) {
         ip.zone = scope_id;
     }
-    *out = (struct n_net_endpoint){.ip = ip, .port = (uint16_t)port};
+    *out = (struct kabi_net_endpoint){.ip = ip, .port = (uint16_t)port};
     return 0;
 }
 
 /* socket が使う端：両方の族の AF_INET6 の socket（IPV6_V6ONLY が 0）は IPv4-mapped の住所で IPv4 に届き、"::" で
    両方の族に立つ。 */
-static struct n_net_endpoint
-sock_endpoint(const sock_object *s, struct n_net_endpoint e)
+static struct kabi_net_endpoint
+sock_endpoint(const sock_object *s, struct kabi_net_endpoint e)
 {
     if (s->family == AF_INET6 && !s->only_v6) {
         if (is_mapped(&e.ip)) {
             e.ip = n_net_ip_v4(e.ip.bytes[12], e.ip.bytes[13], e.ip.bytes[14], e.ip.bytes[15]);
         }
         else if (n_net_ip_is_unspecified(&e.ip)) {
-            e.ip = (struct n_net_ip){.family = N_NET_ANY};
+            e.ip = (struct kabi_net_ip){.family = KABI_NET_ANY};
         }
     }
     return e;
 }
 
 /* bind() の前の socket の端：族のどの住所でもない住所と、システムが選ぶ port。 */
-static struct n_net_endpoint
+static struct kabi_net_endpoint
 sock_unbound(const sock_object *s)
 {
-    return sock_endpoint(s, (struct n_net_endpoint){.ip = {.family = ip_family(s->family)}});
+    return sock_endpoint(s, (struct kabi_net_endpoint){.ip = {.family = ip_family(s->family)}});
 }
 
 static int
 sock_address(socket_state *state, const sock_object *s, PyObject *object, const char *caller,
-             struct n_net_endpoint *out)
+             struct kabi_net_endpoint *out)
 {
     if (parse_address(state, s->family, object, caller, out) < 0) {
         return -1;
@@ -455,22 +455,22 @@ sock_address(socket_state *state, const sock_object *s, PyObject *object, const 
 }
 
 static bool
-same_endpoint(const struct n_net_endpoint *a, const struct n_net_endpoint *b)
+same_endpoint(const struct kabi_net_endpoint *a, const struct kabi_net_endpoint *b)
 {
     return a->port == b->port && n_net_ip_equal(&a->ip, &b->ip);
 }
 
 /* ---- 待ち ---- */
 
-/* socket の handle への呼出しの一度：結果か、deadline（0：待たない）が先に来れば -N_ERR_NOT_READY か
-   -N_ERR_TIMEOUT。 */
+/* socket の handle への呼出しの一度：結果か、deadline（0：待たない）が先に来れば -KABI_ERR_NOT_READY か
+   -KABI_ERR_TIMEOUT。 */
 typedef n_result (*sock_try)(n_handle h, void *data, uint64_t deadline);
 
 static uint64_t
 sock_deadline(const sock_object *s)
 {
     if (s->timeout < 0) {
-        return N_CLOCK_NEVER;
+        return KABI_CLOCK_NEVER;
     }
     return s->timeout == 0 ? 0 : n_clock_after((uint64_t)s->timeout);
 }
@@ -478,10 +478,10 @@ sock_deadline(const sock_object *s)
 static bool
 not_yet(n_result r)
 {
-    return r == -N_ERR_NOT_READY || r == -N_ERR_TIMEOUT;
+    return r == -KABI_ERR_NOT_READY || r == -KABI_ERR_TIMEOUT;
 }
 
-/* 済むか socket の timeout が過ぎるまで h に call を繰り返し、間に interest（N_EVENT_*）を GIL を放して待つ。結果か、
+/* 済むか socket の timeout が過ぎるまで h に call を繰り返し、間に interest（KABI_EVENT_*）を GIL を放して待つ。結果か、
    例外つきの -1：待たない socket は BlockingIOError、TimeoutError、OSError、SIGINT の処理の例外。 */
 static n_result
 sock_call(sock_object *s, n_handle h, unsigned interest, sock_try call, void *data)
@@ -497,13 +497,13 @@ sock_call(sock_object *s, n_handle h, unsigned interest, sock_try call, void *da
             if (!interruptible || !not_yet(r)) {
                 break;
             }
-            int woke = _PyOS_NocturneWait(h, interest | N_EVENT_CLOSED, NULL, 0, deadline);
+            int woke = _PyOS_NocturneWait(h, interest | KABI_EVENT_CLOSED, NULL, 0, deadline);
             if (woke < 0) {
                 interrupted = true;
                 break;
             }
             if (woke == 0) {
-                r = -N_ERR_TIMEOUT;
+                r = -KABI_ERR_TIMEOUT;
                 break;
             }
         }
@@ -556,7 +556,7 @@ udp_handle(sock_object *s)
     if (h >= 0) {
         return h;
     }
-    struct n_net_endpoint at = s->has_bound ? s->bound : sock_unbound(s);
+    struct kabi_net_endpoint at = s->has_bound ? s->bound : sock_unbound(s);
     h = udp_open(&at);
     if (h < 0) {
         set_error(h);
@@ -588,7 +588,7 @@ sock_set_timeout(sock_object *s, PyTime_t timeout)
 /* TCP の socket の選び：handle（接続か listener）のものか、handle の前に置いたもの。handle があれば 1、無ければ 0、
    例外つきの -1。 */
 static int
-sock_tcp_options(sock_object *s, struct n_net_tcp_options *out)
+sock_tcp_options(sock_object *s, struct kabi_net_tcp_options *out)
 {
     n_handle h = _Py_fd_handle(s->fd);
     if (h < 0) {
@@ -605,7 +605,7 @@ sock_tcp_options(sock_object *s, struct n_net_tcp_options *out)
 
 /* 選びを handle に置くか、handle が無ければ handle ができた時に置く分として持つ。0 か、例外つきの -1。 */
 static int
-sock_set_tcp_options(sock_object *s, const struct n_net_tcp_options *set)
+sock_set_tcp_options(sock_object *s, const struct kabi_net_tcp_options *set)
 {
     n_handle h = _Py_fd_handle(s->fd);
     if (h < 0) {
@@ -663,7 +663,7 @@ sock_init(PyObject *self, PyObject *args, PyObject *kwargs)
     int fd;
     int kind;
     /* 渡された descriptor の handle の端：族、IPv6 だけか、listener か */
-    struct n_net_endpoint local = {0}, remote = {0};
+    struct kabi_net_endpoint local = {0}, remote = {0};
     bool known = false;
     if (fileno != Py_None) {
         if (PyFloat_Check(fileno)) {
@@ -683,7 +683,7 @@ sock_init(PyObject *self, PyObject *args, PyObject *kwargs)
             PyErr_SetFromErrno(PyExc_OSError);
             return -1;
         }
-        if (kind != N_KIND_TCP && kind != N_KIND_UDP) {
+        if (kind != KABI_KIND_TCP && kind != KABI_KIND_UDP) {
             errno = ENOTSOCK;
             PyErr_SetFromErrno(PyExc_OSError);
             return -1;
@@ -691,13 +691,13 @@ sock_init(PyObject *self, PyObject *args, PyObject *kwargs)
         n_handle h = _Py_fd_handle(fd);
         known = h >= 0 && n_net_endpoints(h, &local, &remote) >= 0;
         if (family == -1) {
-            family = known && local.ip.family != N_NET_IPV4 ? AF_INET6 : AF_INET;
+            family = known && local.ip.family != KABI_NET_IPV4 ? AF_INET6 : AF_INET;
         }
         if (type == -1) {
-            type = kind == N_KIND_TCP ? SOCK_STREAM : SOCK_DGRAM;
+            type = kind == KABI_KIND_TCP ? SOCK_STREAM : SOCK_DGRAM;
         }
         if (proto == -1) {
-            proto = kind == N_KIND_TCP ? IPPROTO_TCP : IPPROTO_UDP;
+            proto = kind == KABI_KIND_TCP ? IPPROTO_TCP : IPPROTO_UDP;
         }
     }
     else {
@@ -716,10 +716,10 @@ sock_init(PyObject *self, PyObject *args, PyObject *kwargs)
             return -1;
         }
         if (type == SOCK_STREAM && (proto == 0 || proto == IPPROTO_TCP)) {
-            kind = N_KIND_TCP;
+            kind = KABI_KIND_TCP;
         }
         else if (type == SOCK_DGRAM && (proto == 0 || proto == IPPROTO_UDP)) {
-            kind = N_KIND_UDP;
+            kind = KABI_KIND_UDP;
         }
         else {
             errno = type == SOCK_STREAM || type == SOCK_DGRAM ? EPROTONOSUPPORT : EPROTOTYPE;
@@ -741,8 +741,8 @@ sock_init(PyObject *self, PyObject *args, PyObject *kwargs)
     s->proto = proto;
     s->has_bound = s->has_peer = s->read_shut = false;
     /* listener の handle の相手の端はどの族でもない（n_net_endpoints） */
-    s->listener = s->listening = known && kind == N_KIND_TCP && remote.ip.family == N_NET_ANY;
-    s->only_v6 = !known || local.ip.family == N_NET_IPV6;
+    s->listener = s->listening = known && kind == KABI_KIND_TCP && remote.ip.family == KABI_NET_ANY;
+    s->only_v6 = !known || local.ip.family == KABI_NET_IPV6;
     s->reuse_address = 0;
     s->options = tcp_options_start;
     s->options_kept = false;
@@ -819,7 +819,7 @@ is_tcp(const sock_object *s)
 static n_result
 try_accept(n_handle h, void *data, uint64_t deadline)
 {
-    return tcp_accept(h, (struct n_net_endpoint *)data, deadline);
+    return tcp_accept(h, (struct kabi_net_endpoint *)data, deadline);
 }
 
 static PyObject *
@@ -841,8 +841,8 @@ sock_accept(PyObject *self, PyObject *Py_UNUSED(ignored))
     if (h < 0) {
         return PyErr_SetFromErrno(PyExc_OSError);
     }
-    struct n_net_endpoint remote = {0};
-    n_result c = sock_call(s, h, N_EVENT_RECEIVABLE, try_accept, &remote);
+    struct kabi_net_endpoint remote = {0};
+    n_result c = sock_call(s, h, KABI_EVENT_RECEIVABLE, try_accept, &remote);
     if (c < 0) {
         return NULL;
     }
@@ -869,7 +869,7 @@ tcp_listener(sock_object *s, int backlog)
         PyErr_SetFromErrno(PyExc_OSError);
         return -1;
     }
-    struct n_net_endpoint at = s->has_bound ? s->bound : sock_unbound(s);
+    struct kabi_net_endpoint at = s->has_bound ? s->bound : sock_unbound(s);
     n_handle h = tcp_listen(&at, backlog);
     if (h < 0) {
         set_error(h);
@@ -887,7 +887,7 @@ sock_bind(PyObject *self, PyObject *object)
 {
     sock_object *s = (sock_object *)self;
     socket_state *state = type_state(Py_TYPE(self));
-    struct n_net_endpoint at;
+    struct kabi_net_endpoint at;
     if (state == NULL || sock_check(s) < 0 || sock_address(state, s, object, "bind", &at) < 0) {
         return NULL;
     }
@@ -954,14 +954,14 @@ connect_failed(int code, int *error)
 /* at への TCP の接続。待たない socket は握手を進めたまま返り（BlockingIOError EINPROGRESS）、select() は握手が
    終わると書けると言い、SO_ERROR が終わり方を言う。失敗した接続は socket のもので、socket はその後に閉じる。 */
 static int
-sock_tcp_connect(sock_object *s, struct n_net_endpoint at, int *error)
+sock_tcp_connect(sock_object *s, struct kabi_net_endpoint at, int *error)
 {
     n_handle h = _Py_fd_handle(s->fd);
     if (h >= 0 && (!s->listener || s->listening)) {
-        return connect_failed(!s->listener && tcp_result(h) == -N_ERR_NOT_READY ? EALREADY : EISCONN, error);
+        return connect_failed(!s->listener && tcp_result(h) == -KABI_ERR_NOT_READY ? EALREADY : EISCONN, error);
     }
-    struct n_net_endpoint local;
-    const struct n_net_endpoint *from = NULL;
+    struct kabi_net_endpoint local;
+    const struct kabi_net_endpoint *from = NULL;
     if (h >= 0) {
         /* bind() した socket：listener を閉じ、その手元の端から繋ぐ */
         n_result r = n_net_endpoints(h, &local, NULL);
@@ -990,7 +990,7 @@ sock_tcp_connect(sock_object *s, struct n_net_endpoint at, int *error)
         if (result == 0) {
             return 0;
         }
-        if (result != -N_ERR_NOT_READY) {
+        if (result != -KABI_ERR_NOT_READY) {
             return connect_failed(net_errno(result), error);
         }
         if (s->timeout == 0) {
@@ -998,7 +998,7 @@ sock_tcp_connect(sock_object *s, struct n_net_endpoint at, int *error)
         }
         int woke;
         Py_BEGIN_ALLOW_THREADS
-        woke = _PyOS_NocturneWait(h, N_EVENT_SENDABLE | N_EVENT_CLOSED, NULL, 0, deadline);
+        woke = _PyOS_NocturneWait(h, KABI_EVENT_SENDABLE | KABI_EVENT_CLOSED, NULL, 0, deadline);
         Py_END_ALLOW_THREADS
         if (woke < 0) {
             if (PyErr_CheckSignals() < 0) {
@@ -1017,7 +1017,7 @@ static int
 sock_connect_common(sock_object *s, PyObject *object, int *error)
 {
     socket_state *state = type_state(Py_TYPE(s));
-    struct n_net_endpoint at;
+    struct kabi_net_endpoint at;
     if (state == NULL || sock_check(s) < 0 || sock_address(state, s, object, "connect", &at) < 0) {
         return -1;
     }
@@ -1093,7 +1093,7 @@ sock_getsockname(PyObject *self, PyObject *Py_UNUSED(ignored))
         return NULL;
     }
     n_handle h = _Py_fd_handle(s->fd);
-    struct n_net_endpoint local;
+    struct kabi_net_endpoint local;
     if (h < 0) {
         local = s->has_bound ? s->bound : sock_unbound(s);
     }
@@ -1125,7 +1125,7 @@ sock_getpeername(PyObject *self, PyObject *Py_UNUSED(ignored))
         errno = ENOTCONN;
         return PyErr_SetFromErrno(PyExc_OSError);
     }
-    struct n_net_endpoint remote;
+    struct kabi_net_endpoint remote;
     n_result r = n_net_endpoints(h, NULL, &remote);
     if (r < 0) {
         return set_error(r);
@@ -1161,13 +1161,13 @@ sock_getsockopt(PyObject *self, PyObject *args)
         /* 接続の終わり方。待たない connect はここで知る */
         n_handle h = is_tcp(s) && !s->listener ? _Py_fd_handle(s->fd) : -1;
         n_result result = h >= 0 ? tcp_result(h) : 0;
-        value = result < 0 && result != -N_ERR_NOT_READY ? net_errno(result) : 0;
+        value = result < 0 && result != -KABI_ERR_NOT_READY ? net_errno(result) : 0;
     }
     else if (level == IPPROTO_IPV6 && option == IPV6_V6ONLY && s->family == AF_INET6) {
         value = s->only_v6;
     }
     else if (is_tcp(s) && is_tcp_option(level, option)) {
-        struct n_net_tcp_options o;
+        struct kabi_net_tcp_options o;
         if (sock_tcp_options(s, &o) < 0) {
             return NULL;
         }
@@ -1242,7 +1242,7 @@ sock_setsockopt(PyObject *self, PyObject *args)
         errno = EINVAL;
         return PyErr_SetFromErrno(PyExc_OSError);
     }
-    struct n_net_tcp_options o;
+    struct kabi_net_tcp_options o;
     int held = sock_tcp_options(s, &o);
     if (held < 0) {
         return NULL;
@@ -1331,7 +1331,7 @@ sock_setblocking(PyObject *self, PyObject *object)
 struct transfer {
     char *buf;
     size_t len;
-    struct n_net_endpoint address;    /* 受けは送り手、送りは宛先 */
+    struct kabi_net_endpoint address;    /* 受けは送り手、送りは宛先 */
 };
 
 static n_result
@@ -1345,7 +1345,7 @@ static n_result
 try_udp_recv(n_handle h, void *data, uint64_t deadline)
 {
     struct transfer *t = data;
-    struct n_net_received info;
+    struct kabi_net_received info;
     n_result r = udp_receive(h, t->buf, t->len, &info, deadline, -1);
     if (r >= 0) {
         t->address = info.from;
@@ -1360,7 +1360,7 @@ try_udp_recv(n_handle h, void *data, uint64_t deadline)
 /* 流れのバイトか、一つの datagram（繋いだ UDP の socket は繋いだ相手のものだけ）とその送り手（from、NULL：要らない）
    を buf に：数か、例外つきの -1。 */
 static Py_ssize_t
-sock_receive(sock_object *s, char *buf, size_t len, struct n_net_endpoint *from)
+sock_receive(sock_object *s, char *buf, size_t len, struct kabi_net_endpoint *from)
 {
     if (sock_check(s) < 0) {
         return -1;
@@ -1379,14 +1379,14 @@ sock_receive(sock_object *s, char *buf, size_t len, struct n_net_endpoint *from)
         if (len == 0) {
             return 0;
         }
-        return sock_call(s, h, N_EVENT_RECEIVABLE, try_tcp_recv, &t);
+        return sock_call(s, h, KABI_EVENT_RECEIVABLE, try_tcp_recv, &t);
     }
     n_handle h = udp_handle(s);
     if (h < 0) {
         return -1;
     }
     for (;;) {
-        n_result r = sock_call(s, h, N_EVENT_RECEIVABLE, try_udp_recv, &t);
+        n_result r = sock_call(s, h, KABI_EVENT_RECEIVABLE, try_udp_recv, &t);
         if (r < 0) {
             return -1;
         }
@@ -1461,7 +1461,7 @@ sock_recv_into(PyObject *self, PyObject *args, PyObject *kwargs)
 
 /* 受けたものの送り手：流れのバイトには言う送り手が無い。 */
 static PyObject *
-sender_address(sock_object *s, const struct n_net_endpoint *from)
+sender_address(sock_object *s, const struct kabi_net_endpoint *from)
 {
     return is_tcp(s) ? Py_NewRef(Py_None) : make_address(s->family, from);
 }
@@ -1486,7 +1486,7 @@ sock_recvfrom(PyObject *self, PyObject *args)
     if (writer == NULL) {
         return NULL;
     }
-    struct n_net_endpoint from = {0};
+    struct kabi_net_endpoint from = {0};
     Py_ssize_t got = sock_receive((sock_object *)self, PyBytesWriter_GetData(writer), (size_t)size, &from);
     if (got < 0) {
         PyBytesWriter_Discard(writer);
@@ -1521,7 +1521,7 @@ sock_recvfrom_into(PyObject *self, PyObject *args, PyObject *kwargs)
         PyErr_SetFromErrno(PyExc_OSError);
     }
     else {
-        struct n_net_endpoint from = {0};
+        struct kabi_net_endpoint from = {0};
         Py_ssize_t got = sock_receive((sock_object *)self, view.buf, (size_t)(nbytes ? nbytes : view.len), &from);
         if (got >= 0) {
             result = Py_BuildValue("(nN)", got, sender_address((sock_object *)self, &from));
@@ -1545,22 +1545,22 @@ try_udp_send(n_handle h, void *data, uint64_t deadline)
     struct transfer *t = data;
     for (;;) {
         n_result r = udp_send_to(h, &t->address, t->buf, t->len);
-        if (r != -N_ERR_NOT_READY || deadline == 0) {
+        if (r != -KABI_ERR_NOT_READY || deadline == 0) {
             return r;
         }
-        n_result woke = n_net_wait(h, N_EVENT_SENDABLE, deadline, -1);
+        n_result woke = n_net_wait(h, KABI_EVENT_SENDABLE, deadline, -1);
         if (woke < 0) {
             return woke;
         }
         if (woke == 0) {
-            return -N_ERR_TIMEOUT;
+            return -KABI_ERR_TIMEOUT;
         }
     }
 }
 
 /* buf の先頭を流れに、または全部を一つの datagram で to（NULL：繋いだ相手）へ送る：数か、例外つきの -1。 */
 static Py_ssize_t
-sock_send_bytes(sock_object *s, const char *buf, size_t len, const struct n_net_endpoint *to)
+sock_send_bytes(sock_object *s, const char *buf, size_t len, const struct kabi_net_endpoint *to)
 {
     if (sock_check(s) < 0) {
         return -1;
@@ -1578,7 +1578,7 @@ sock_send_bytes(sock_object *s, const char *buf, size_t len, const struct n_net_
             PyErr_SetFromErrno(PyExc_OSError);
             return -1;
         }
-        return sock_call(s, h, N_EVENT_SENDABLE, try_tcp_send, &t);
+        return sock_call(s, h, KABI_EVENT_SENDABLE, try_tcp_send, &t);
     }
     if (to == NULL) {
         if (!s->has_peer) {
@@ -1593,7 +1593,7 @@ sock_send_bytes(sock_object *s, const char *buf, size_t len, const struct n_net_
         return -1;
     }
     t.address = *to;
-    return sock_call(s, h, N_EVENT_SENDABLE, try_udp_send, &t);
+    return sock_call(s, h, KABI_EVENT_SENDABLE, try_udp_send, &t);
 }
 
 static PyObject *
@@ -1701,7 +1701,7 @@ sock_sendto(PyObject *self, PyObject *args)
         return NULL;
     }
     PyObject *result = NULL;
-    struct n_net_endpoint to;
+    struct kabi_net_endpoint to;
     if (flags != 0) {
         errno = EOPNOTSUPP;
         PyErr_SetFromErrno(PyExc_OSError);
@@ -1917,8 +1917,8 @@ socket_getaddrinfo(PyObject *module, PyObject *args, PyObject *kwargs)
         return set_gaierror(state, EAI_BADFLAGS);
     }
 
-    struct n_net_ip fixed[2];
-    struct n_net_ip *ips = fixed;
+    struct kabi_net_ip fixed[2];
+    struct kabi_net_ip *ips = fixed;
     Py_ssize_t count = 0;
     PyObject *name_bytes = NULL;
     const char *name = NULL;
@@ -1926,10 +1926,10 @@ socket_getaddrinfo(PyObject *module, PyObject *args, PyObject *kwargs)
         /* 名前の無い host：AI_PASSIVE はどの住所でもない住所、ほかは loopback（RFC 6724 の順で IPv6 が先） */
         bool passive = flags & AI_PASSIVE;
         if (family != AF_INET) {
-            fixed[count++] = passive ? (struct n_net_ip){.family = N_NET_IPV6} : ipv6_loopback();
+            fixed[count++] = passive ? (struct kabi_net_ip){.family = KABI_NET_IPV6} : ipv6_loopback();
         }
         if (family != AF_INET6) {
-            fixed[count++] = passive ? (struct n_net_ip){.family = N_NET_IPV4} : n_net_ip_v4(127, 0, 0, 1);
+            fixed[count++] = passive ? (struct kabi_net_ip){.family = KABI_NET_IPV4} : n_net_ip_v4(127, 0, 0, 1);
         }
     }
     else {
@@ -1966,7 +1966,7 @@ socket_getaddrinfo(PyObject *module, PyObject *args, PyObject *kwargs)
     for (Py_ssize_t i = 0; list != NULL && i < count; i++) {
         static const int types[] = {SOCK_STREAM, SOCK_DGRAM};
         int af = address_family(&ips[i]);
-        struct n_net_endpoint e = {.ip = ips[i], .port = (uint16_t)port};
+        struct kabi_net_endpoint e = {.ip = ips[i], .port = (uint16_t)port};
         for (size_t k = 0; k < Py_ARRAY_LENGTH(types); k++) {
             if (type != 0 && type != types[k]) {
                 continue;
@@ -2024,15 +2024,15 @@ socket_getnameinfo(PyObject *module, PyObject *args)
         return NULL;
     }
     /* 住所は数の文字だけ（名前は引かない） */
-    struct n_net_ip ip;
+    struct kabi_net_ip ip;
     if (!n_net_ip_parse(host, &ip)) {
         return set_gaierror(state, EAI_NONAME);
     }
-    if (ip.family == N_NET_IPV4 && PyTuple_GET_SIZE(address) != 2) {
+    if (ip.family == KABI_NET_IPV4 && PyTuple_GET_SIZE(address) != 2) {
         PyErr_SetString(PyExc_OSError, "IPv4 sockaddr must be 2 tuple");
         return NULL;
     }
-    if (ip.family == N_NET_IPV6 && scope_id != 0) {
+    if (ip.family == KABI_NET_IPV6 && scope_id != 0) {
         ip.zone = scope_id;
     }
     /* 逆引きは無い：数の形。名前を求めるなら失敗する */
@@ -2055,7 +2055,7 @@ socket_gethostbyname(PyObject *module, PyObject *args)
     if (PySys_Audit("socket.gethostbyname", "O", args) < 0) {
         return NULL;
     }
-    struct n_net_ip ip;
+    struct kabi_net_ip ip;
     if (host_address(state, host, AF_INET, &ip) < 0) {
         return NULL;
     }
@@ -2071,8 +2071,8 @@ socket_gethostbyname_ex(PyObject *module, PyObject *args)
         return NULL;
     }
     PyObject *result = NULL;
-    struct n_net_ip literal;
-    struct n_net_ip *ips = &literal;
+    struct kabi_net_ip literal;
+    struct kabi_net_ip *ips = &literal;
     Py_ssize_t count = 1;
     if (PySys_Audit("socket.gethostbyname", "O", args) < 0) {
         goto done;
@@ -2083,7 +2083,7 @@ socket_gethostbyname_ex(PyObject *module, PyObject *args)
             goto done;
         }
     }
-    else if (literal.family != N_NET_IPV4) {
+    else if (literal.family != KABI_NET_IPV4) {
         set_gaierror(state, EAI_FAMILY);
         goto done;
     }
@@ -2117,12 +2117,12 @@ socket_gethostbyaddr(PyObject *module, PyObject *args)
         return NULL;
     }
     PyObject *result = NULL;
-    struct n_net_ip ip;
+    struct kabi_net_ip ip;
     if (PySys_Audit("socket.gethostbyaddr", "O", args) < 0) {
         goto done;
     }
     if (!n_net_ip_parse(name, &ip)) {
-        struct n_net_ip *list;
+        struct kabi_net_ip *list;
         if (resolve(state, name, AF_UNSPEC, &list) < 0) {
             goto done;
         }
@@ -2370,7 +2370,7 @@ socket_inet_ntoa(PyObject *module, PyObject *args)
         return NULL;
     }
     const unsigned char *b = view.buf;
-    struct n_net_ip ip = n_net_ip_v4(b[0], b[1], b[2], b[3]);
+    struct kabi_net_ip ip = n_net_ip_v4(b[0], b[1], b[2], b[3]);
     PyBuffer_Release(&view);
     return ip_text(ip);
 }
@@ -2388,7 +2388,7 @@ socket_inet_pton(PyObject *module, PyObject *args)
         return PyErr_SetFromErrno(PyExc_OSError);
     }
     /* 住所だけ（zone の "%" は住所の外） */
-    struct n_net_ip ip;
+    struct kabi_net_ip ip;
     if (strchr(text, '%') != NULL || !n_net_ip_parse(text, &ip) || ip.family != ip_family(family)) {
         PyErr_SetString(PyExc_OSError, "illegal IP address string passed to inet_pton");
         return NULL;
@@ -2413,7 +2413,7 @@ socket_inet_ntop(PyObject *module, PyObject *args)
         PyErr_SetString(PyExc_ValueError, "invalid length of packed IP address string");
     }
     else {
-        struct n_net_ip ip = {.family = ip_family(family)};
+        struct kabi_net_ip ip = {.family = ip_family(family)};
         memcpy(ip.bytes, view.buf, (size_t)length);
         result = ip_text(ip);
     }
