@@ -13,6 +13,7 @@
 
 #include <nos.h>
 #include <nocturne.h>
+#include <nocturne_language.h>
 
 /* python.NOS が提供する C の API（見え方が default の定義の全部。エクスポートの一覧は ports/cpython/build.py が作る）。 */
 NOS_PROVIDE(_Py_NOCTURNE_API_PROVIDER, PY_MINOR_VERSION, 0, 0);
@@ -36,7 +37,7 @@ message(const char *format, ...)
     return PyUnicode_DecodeUTF8(text, (Py_ssize_t)strlen(text), "surrogateescape");
 }
 
-/* 結び付けの失敗（struct n_link_failure）の文。 */
+/* 読み込みの失敗の文：結び付けの失敗なら中核のライブラリーの文（n_locale_link_failure）、ほかは結果の文。 */
 static PyObject *
 link_failure_text(const char *pathname, n_result r)
 {
@@ -44,44 +45,9 @@ link_failure_text(const char *pathname, n_result r)
     if (n_image_failure(&f) < 0) {
         return message("%s を読み込めない：%s", pathname, n_result_text(r));
     }
-    const char *why;
-    switch (f.reason) {
-    case N_LINK_PROVIDER:
-        why = "要るプロバイダーが無い";
-        break;
-    case N_LINK_VERSION:
-        why = "提供者の版が要求に合わない";
-        break;
-    case N_LINK_SYMBOL:
-        why = "要るシンボルが無い";
-        break;
-    case N_LINK_CYCLE:
-        why = "プロバイダーの依存に輪がある";
-        break;
-    case N_LINK_SINGLE:
-        why = "プロセスに一つのプロバイダーの結び付けが合わない";
-        break;
-    case N_LINK_REPLACEMENT:
-        why = "置き換えの項が置き換えられるエクスポートを指さない";
-        break;
-    case N_LINK_ABI:
-        why = "nocturne.abi を要求できないイメージが要求した";
-        break;
-    case N_LINK_KIND:
-        why = "ライブラリーのイメージでないか、壊れている";
-        break;
-    case N_LINK_CONFLICT:
-        why = "プログラムが提供するプロバイダーを、ほかのイメージも提供する";
-        break;
-    case N_LINK_RUNTIME:
-        why = "プロセスのランタイムを二つ目として読み込もうとした";
-        break;
-    default:
-        why = n_result_text(r);
-        break;
-    }
-    return message("%s を読み込めない：%s（%s の要求 %s %u.%u%s%s）", pathname, why, f.image, f.provider,
-                   (unsigned)f.major, (unsigned)f.minor, f.symbol[0] ? " の " : "", f.symbol);
+    char why[640];
+    n_locale_link_failure(why, sizeof(why), &f);
+    return message("%s を読み込めない：%s", pathname, why);
 }
 
 static int
