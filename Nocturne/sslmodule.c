@@ -4,7 +4,7 @@
    client は net_stream の client（TLS 1.3 と 1.2。鍵交換は X25519MLKEM768 を先に申し出る）、server は net_stream の
    server（TLS 1.3 だけ。TLS_AES_256_GCM_SHA384、X25519MLKEM768、P-256・P-384・P-521 の ECDSA の身元）。
 
-   握手と読み書きは net_stream の待たない口（ns_handshake の 0、ns_try_read、ns_try_write、ns_try_close）で進め、
+   握手と読み書きは net_stream の待たない関数（ns_handshake の 0、ns_try_read、ns_try_write、ns_try_close）で進め、
    待つのはこの module：socket の timeout まで、GIL を放して socket の handle を待つ（_PyOS_NocturneWait。主の
    スレッドの待ちは Ctrl+C で終わり、SIGINT の処理が例外を上げなければ続く：PEP 475）。だから待たない socket は
    SSLWantReadError と SSLWantWriteError を上げ、MemoryBIO の流れは運び手の無い byte の受け渡しになる。
@@ -2256,7 +2256,7 @@ context_load_cert_chain(PyObject *op_self, PyObject *args, PyObject *kwds)
     ns_tls_identity *id = ns_tls_identity_new(PyBytes_AS_STRING(chain), (size_t)PyBytes_GET_SIZE(chain),
                                               PyBytes_AS_STRING(key), (size_t)PyBytes_GET_SIZE(key), err, sizeof err);
     Py_DECREF(chain);
-    Py_DECREF(key);   /* 鍵の写しは bytes の放しで消えない：Python の bytes は消さない */
+    Py_DECREF(key);   /* 鍵のコピーは bytes の放しで消えない：Python の bytes は消さない */
     if (id == NULL) {
         if (errno == ENOMEM) {
             return PyErr_NoMemory();

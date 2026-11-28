@@ -4,7 +4,7 @@
    名指す契約は、拡張モジュールが提供するプロバイダー _Py_NOCTURNE_EXTENSION_PROVIDER の major と minor
    （Nocturne/pyconfig.h）で、モジュールの関数（PyModExport_<名>、PyInit_<名>）はそのプロバイダーのエクスポートから
    引く。拡張モジュールが使う C の API は、python.NOS が提供するプロバイダー _Py_NOCTURNE_API_PROVIDER の
-   major PY_MINOR_VERSION で、カーネルが読み込みの時に結ぶ。だから別の 3.x の版で組んだ拡張モジュールは、結べない
+   major PY_MINOR_VERSION で、カーネルが読み込みの時に結ぶ。だから別の 3.x の版でビルドした拡張モジュールは、結べない
    まま読み込みが失敗する。拡張モジュールの要求はプロセスの表で結ぶ。読み込んだイメージはプロセスの終わりまで
    外れない。 */
 

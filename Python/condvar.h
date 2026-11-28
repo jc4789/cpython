@@ -314,7 +314,7 @@ PyCOND_BROADCAST(PyCOND_T *cv)
 /*
  * Nocturne：番地の待ち（docs/nocturne-native-abi.md §5）。錠は三つの状態を持つ：0 は開き、1 は閉じ、2 は待つ者の
  * いる閉じ。待つ者がいなければ、開きは呼び出しをしない。条件の待ちは、その番号が錠の下で読んだ番号の間眠る：
- * その間の signal と broadcast が番号を変えるので、起こしを失わない。
+ * その間の signal と broadcast が番号を変えるので、目覚めを失わない。
  */
 
 #include <nocturne/core/thread.h>

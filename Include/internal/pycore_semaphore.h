@@ -39,7 +39,7 @@ typedef struct _PySemaphore {
 #if defined(MS_WINDOWS)
     HANDLE platform_sem;
 #elif defined(__nocturne__)
-    // まだ取られていない起こし。待ちはこの語で眠る（n_wait_on_address）
+    // まだ取られていない目覚めの数。待ちはこの語で眠る（n_wait_on_address）
     uint32_t count;
 #elif defined(_Py_USE_SEMAPHORES)
     sem_t platform_sem;

@@ -272,7 +272,7 @@ report_wakeup_send_error(void* data)
    メッセージを送る。インタープリターのスレッドの一つがそれを受け、まとめて ISO C の raise(SIGINT) で届ける（Windows の
    コンソールの handler のスレッドと同じ）：Python が SIGINT を扱う間の handler は signal_handler、SIG_IGN は無視し、
    SIG_DFL はアプリを終える。スレッドが動く間、アプリは Ctrl+C を引き受ける（n_interrupts_claim）：シェルはアプリを
-   止める代わりに知らせを送る。signal_handler は届けた数を `delivered` に数えて起こし、主のスレッドの待ちはその語を
+   止める代わりに知らせを送る。signal_handler は届けた数を `delivered` に数えて待ちを目覚めさせ、主のスレッドの待ちはその語を
    見る（_PyOS_NocturneWait。Windows の待ちが sigint_event も待つのと同じ）。
 
    中核のライブラリーの n_line_read は、端末の行を読む間 Ctrl+C を自分で受ける（Nocturne/descriptors.c の

@@ -123,7 +123,7 @@ _pythread_nocturne_set_stacksize(size_t size)
 #define THREAD_SET_STACKSIZE(x) _pythread_nocturne_set_stacksize(x)
 
 
-/* 古い TLS の口（PEP 539 で非推奨）：ISO C の tss の番号をそのまま鍵にする。 */
+/* 古い TLS の API（PEP 539 で非推奨）：ISO C の tss の番号をそのまま鍵にする。 */
 
 int
 PyThread_create_key(void)
@@ -165,7 +165,7 @@ PyThread_ReInitTLS(void)
 }
 
 
-/* TSS の口（PEP 539）。 */
+/* TSS の API（PEP 539）。 */
 
 int
 PyThread_tss_create(Py_tss_t *key)

@@ -312,7 +312,7 @@ stat_result_of_entry(nocturne_state *state, const struct n_entry *entry)
 
 /* ---- the environment ---- */
 
-/* このアプリの Python の環境：os.environ の元と、起こすアプリが受ける環境。初めは起動の環境（中核のライブラリーの
+/* このアプリの Python の環境：os.environ の元と、起動するアプリが受ける環境。初めは起動の環境（中核のライブラリーの
    n_environment。変わらない）で、putenv と unsetenv が変えると、それからは配列と文字列がこのモジュールのもの
    になる。起動の環境は変わらないので、C の getenv は起動の環境を読み続ける。 */
 static struct {
@@ -345,7 +345,7 @@ environment_launched(size_t index)
     }
 }
 
-/* モジュール自身の環境の写し。錠を持って呼ぶ。 */
+/* モジュール自身の環境のコピー。錠を持って呼ぶ。 */
 static int
 environment_own(void)
 {

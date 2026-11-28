@@ -4,7 +4,7 @@
    受け継ぐハンドルを起動の表で渡す（docs/nocturne-native-abi.md §5）。プロセスが分け合うものは系のオブジェクトで作る：
 
    - SemLock：共有のページ（§7）の上のセマフォの語。acquire は原子の交換で語を下げ、番地の待ちで眠る（共有のページでは
-     アプリをまたいで効く）。release は語を上げ、眠る者を一つ起こす。子が受け継ぐのはページのハンドル。
+     アプリをまたいで効く）。release は語を上げ、眠る者を一つ目覚めさせる。子が受け継ぐのはページのハンドル。
    - Shared：書ける buffer としての共有のページ。multiprocessing.heap のアリーナ（Value、Array、sharedctypes）。
    - channel_send と channel_receive：Connection のメッセージはチャネルのメッセージ（§4）なので、区切りは系のもの。
      pickle したオブジェクトが持つハンドルは、本体の前の空のメッセージに一つずつ添えて渡る：本体は添え物を持たず、
@@ -66,7 +66,7 @@ deadline_of(PyObject *timeout, uint64_t *deadline)
 /* ---- SemLock ---- */
 
 /* セマフォのあるページ。value がセマフォで、waiters はそれで眠ろうとしているどのアプリのスレッドも数える：release は
-   誰かが眠る時だけ起こす。どちらも逐次一貫で読み書きする：待つ者は waiters を上げてから value を読み、release は
+   誰かが眠る時だけ目覚めさせる。どちらも逐次一貫で読み書きする：待つ者は waiters を上げてから value を読み、release は
    value を上げてから waiters を読むので、どちらかがもう片方を見る。 */
 struct semaphore_page {
     uint32_t value;
@@ -97,7 +97,7 @@ semaphore_take(struct semaphore_page *page)
     return false;
 }
 
-/* 語が上がっている間に取らずに去る待つ者は、受けたかもしれない起こしを次の眠る者へ渡す：答えの無い release を
+/* 語が上がっている間に取らずに去る待つ者は、受けたかもしれない目覚めを次の眠る者へ渡す：答えの無い release を
    残さない。 */
 static void
 semaphore_pass_on(struct semaphore_page *page)
@@ -108,7 +108,7 @@ semaphore_pass_on(struct semaphore_page *page)
     }
 }
 
-/* 締め切りまでセマフォを取る：1 は取った、0 は締め切り、-1 は例外つき（SIGINT の handler が起こした）。一周ごとに、
+/* 締め切りまでセマフォを取る：1 は取った、0 は締め切り、-1 は例外つき（SIGINT の handler が例外を置いた）。一周ごとに、
    語を取るか、締め切りで終わるか、release が語を変えるまで眠る。 */
 static int
 semaphore_wait(struct semaphore_page *page, uint64_t deadline)
