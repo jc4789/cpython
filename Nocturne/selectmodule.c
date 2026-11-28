@@ -1,18 +1,13 @@
-/* select: Python's select module on Nocturne (ports/cpython/README.md).
+/* select：Nocturne の上の Python の select のモジュール（ports/cpython/README.md）。
 
-   select.select waits in one of the system's event queues for the handles of
-   the descriptors it is given (Nocturne/descriptors.h): a descriptor is
-   readable when its handle reports KABI_EVENT_RECEIVABLE or KABI_EVENT_CLOSED, or
-   when bytes it received are waiting to be read, and writable when its handle
-   reports KABI_EVENT_SENDABLE or KABI_EVENT_CLOSED. A document's descriptor is
-   always both, and a socket that never connected answers at once. Nothing is
-   ever exceptional: the system has no urgent data.
+   select.select は、渡された記述子（Nocturne/descriptors.h）のハンドルを系のイベントキューの一つで待つ：記述子は、
+   そのハンドルが N_EVENT_RECEIVABLE か N_EVENT_CLOSED を知らせるか、受けたバイトが読まれるのを待っていれば読めて、
+   ハンドルが N_EVENT_SENDABLE か N_EVENT_CLOSED を知らせれば書ける。文書の記述子はいつも両方で、一度もつながらなかった
+   socket はすぐ答える。例外の状態は無い：系は急ぎのデータを持たない。
 
-   The queue is level-triggered (nocturne.h), so a wait reports every handle
-   that is ready. On the main thread Ctrl+C ends the wait, Python runs its
-   SIGINT handler, and the wait goes on to the same deadline unless the
-   handler raised (PEP 475). The module has select alone: selectors chooses
-   its SelectSelector. */
+   キューは状態で知らせる（nocturne.core の events）ので、一度の待ちが用意のできたハンドルを全部知らせる。主のスレッド
+   では Ctrl+C が待ちを終え、Python が SIGINT の handler を走らせ、handler が例外を起こさなければ同じ締め切りまで待ち
+   続ける（PEP 475）。モジュールは select だけを持つ：selectors は SelectSelector を選ぶ。 */
 #include "Python.h"
 #include "pycore_signal.h"        // _PyOS_NocturneWaitEvents()
 #include "pycore_time.h"          // _PyTime_FromSecondsObject()
@@ -23,12 +18,12 @@
 #include <stdlib.h>
 
 struct entry {
-    PyObject *object;             /* borrowed from the caller's sequence */
-    int ready;                    /* KABI_EVENT_* */
-    n_handle handle;              /* -1: nothing to wait for */
+    PyObject *object;             /* 呼び手の並びから借りる */
+    int ready;                    /* N_EVENT_* */
+    int32_t handle;               /* -1 は待つものが無い */
 };
 
-/* What a sequence of the caller names: 0, or -1 with an exception. */
+/* 呼び手の並びが名指すもの：0 か、例外つきの -1。 */
 static int
 read_entries(PyObject *sequence, struct entry **out, Py_ssize_t *count, PyObject **fast)
 {
@@ -49,7 +44,7 @@ read_entries(PyObject *sequence, struct entry **out, Py_ssize_t *count, PyObject
             PyMem_Free(entries);
             return -1;
         }
-        n_handle handle;
+        int32_t handle;
         int ready = _Py_fd_poll(fd, &handle);
         if (ready < 0) {
             PyMem_Free(entries);
@@ -64,26 +59,26 @@ read_entries(PyObject *sequence, struct entry **out, Py_ssize_t *count, PyObject
 }
 
 struct watched {
-    n_handle handle;
+    int32_t handle;
     uint32_t interest;
-    uint32_t events;              /* what the wait reported */
+    uint32_t events;              /* 待ちが知らせたもの */
 };
 
 static int
 by_handle(const void *a, const void *b)
 {
-    n_handle x = ((const struct watched *)a)->handle, y = ((const struct watched *)b)->handle;
+    int32_t x = ((const struct watched *)a)->handle, y = ((const struct watched *)b)->handle;
     return x < y ? -1 : x > y;
 }
 
 static struct watched *
-find_watched(struct watched *list, Py_ssize_t count, n_handle handle)
+find_watched(struct watched *list, Py_ssize_t count, int32_t handle)
 {
     struct watched key = {.handle = handle};
     return bsearch(&key, list, (size_t)count, sizeof *list, by_handle);
 }
 
-/* The objects of entries that are ready for mask, in a new list. */
+/* entries のうち mask の用意ができたものを、新しいリストで返す。 */
 static PyObject *
 ready_list(const struct entry *entries, Py_ssize_t count, struct watched *list,
            Py_ssize_t watched, uint32_t mask)
@@ -111,7 +106,7 @@ select_select(PyObject *module, PyObject *args)
     if (!PyArg_UnpackTuple(args, "select", 3, 4, &rlist, &wlist, &xlist, &timeout_object)) {
         return NULL;
     }
-    uint64_t deadline = KABI_CLOCK_NEVER;
+    uint64_t deadline = N_CLOCK_NEVER;
     if (timeout_object != Py_None) {
         PyTime_t timeout;
         if (_PyTime_FromSecondsObject(&timeout, timeout_object, _PyTime_ROUND_TIMEOUT) < 0) {
@@ -132,16 +127,16 @@ select_select(PyObject *module, PyObject *args)
     struct entry *r = NULL, *w = NULL, *x = NULL;
     Py_ssize_t nr = 0, nw = 0, nx = 0;
     struct watched *list = NULL;
-    struct kabi_event *events = NULL;
-    n_handle queue = -1;
+    struct n_notification *events = NULL;
+    n_events queue = {-1};
     if (read_entries(rlist, &r, &nr, &rfast) < 0 || read_entries(wlist, &w, &nw, &wfast) < 0 ||
         read_entries(xlist, &x, &nx, &xfast) < 0) {
         goto done;
     }
 
-    /* each handle once, with what any of its descriptors waits for */
+    /* ハンドルごとに一度、その記述子のどれかが待つものと一緒に */
     list = PyMem_New(struct watched, nr + nw + 1);
-    events = PyMem_New(struct kabi_event, nr + nw + 1);
+    events = PyMem_New(struct n_notification, nr + nw + 1);
     if (list == NULL || events == NULL) {
         PyErr_NoMemory();
         goto done;
@@ -149,15 +144,15 @@ select_select(PyObject *module, PyObject *args)
     Py_ssize_t count = 0;
     bool ready_now = false;
     for (Py_ssize_t i = 0; i < nr; i++) {
-        ready_now |= (r[i].ready & (KABI_EVENT_RECEIVABLE | KABI_EVENT_CLOSED)) != 0;
+        ready_now |= (r[i].ready & (N_EVENT_RECEIVABLE | N_EVENT_CLOSED)) != 0;
         if (r[i].handle >= 0) {
-            list[count++] = (struct watched){.handle = r[i].handle, .interest = KABI_EVENT_RECEIVABLE | KABI_EVENT_CLOSED};
+            list[count++] = (struct watched){.handle = r[i].handle, .interest = N_EVENT_RECEIVABLE | N_EVENT_CLOSED};
         }
     }
     for (Py_ssize_t i = 0; i < nw; i++) {
-        ready_now |= (w[i].ready & (KABI_EVENT_SENDABLE | KABI_EVENT_CLOSED)) != 0;
+        ready_now |= (w[i].ready & (N_EVENT_SENDABLE | N_EVENT_CLOSED)) != 0;
         if (w[i].handle >= 0) {
-            list[count++] = (struct watched){.handle = w[i].handle, .interest = KABI_EVENT_SENDABLE | KABI_EVENT_CLOSED};
+            list[count++] = (struct watched){.handle = w[i].handle, .interest = N_EVENT_SENDABLE | N_EVENT_CLOSED};
         }
     }
     qsort(list, (size_t)count, sizeof *list, by_handle);
@@ -171,43 +166,49 @@ select_select(PyObject *module, PyObject *args)
         }
     }
 
-    queue = n_events_create();
-    if (queue < 0) {
-        errno = (int)-queue;
+    n_result created = n_events_create(&queue);
+    if (created < 0) {
+        queue.handle = -1;
+        errno = (int)-created;
         PyErr_SetFromErrno(PyExc_OSError);
         goto done;
     }
     for (Py_ssize_t i = 0; i < distinct; i++) {
-        n_result watched = n_events_watch(queue, list[i].handle, list[i].interest, (uint64_t)i);
+        n_result watched = n_events_watch(queue, (n_handle){list[i].handle}, list[i].interest, (uint64_t)i);
         if (watched < 0) {
             errno = (int)-watched;
             PyErr_SetFromErrno(PyExc_OSError);
             goto done;
         }
     }
-    /* what is ready now needs no wait for the rest */
+    /* 今用意のできたものがあれば、残りを待たない */
     uint64_t until = ready_now ? 0 : deadline;
     for (;;) {
-        long got;
+        n_result got;
         Py_BEGIN_ALLOW_THREADS
-        got = _PyOS_NocturneWaitEvents(queue, events, (unsigned long)(distinct + 1), until);
+        got = _PyOS_NocturneWaitEvents(queue, events, (size_t)(distinct + 1), until);
         Py_END_ALLOW_THREADS
-        if (got < 0) {
+        if (got == -N_ERR_CANCELLED) {
             if (PyErr_CheckSignals() < 0) {
                 goto done;
             }
             continue;
         }
-        for (long i = 0; i < got; i++) {
+        if (got < 0) {
+            errno = (int)-got;
+            PyErr_SetFromErrno(PyExc_OSError);
+            goto done;
+        }
+        for (n_result i = 0; i < got; i++) {
             if (events[i].token < (uint64_t)distinct) {
                 list[events[i].token].events |= events[i].events;
             }
         }
         break;
     }
-    PyObject *readable = ready_list(r, nr, list, distinct, KABI_EVENT_RECEIVABLE | KABI_EVENT_CLOSED);
+    PyObject *readable = ready_list(r, nr, list, distinct, N_EVENT_RECEIVABLE | N_EVENT_CLOSED);
     PyObject *writable = readable == NULL ? NULL
-                         : ready_list(w, nw, list, distinct, KABI_EVENT_SENDABLE | KABI_EVENT_CLOSED);
+                         : ready_list(w, nw, list, distinct, N_EVENT_SENDABLE | N_EVENT_CLOSED);
     if (writable != NULL) {
         result = Py_BuildValue("(NN[])", readable, writable);
     }
@@ -215,8 +216,8 @@ select_select(PyObject *module, PyObject *args)
         Py_XDECREF(readable);
     }
 done:
-    if (queue >= 0) {
-        n_handle_close(queue);
+    if (queue.handle >= 0) {
+        n_handle_close((n_handle){queue.handle});
     }
     PyMem_Free(list);
     PyMem_Free(events);

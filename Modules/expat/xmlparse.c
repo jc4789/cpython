@@ -112,7 +112,7 @@
 #ifdef _WIN32
 #  define getpid GetCurrentProcessId
 #elif defined(__nocturne__)
-#  include "nocturne.h" /* n_random(), n_clock_wall() */
+#  include <nocturne/core.h> /* n_random(), n_clock_wall() */
 #else
 #  include <sys/time.h>  /* gettimeofday() */
 #  include <sys/types.h> /* getpid() */
@@ -1074,7 +1074,7 @@ gather_time_entropy(void) {
   GetSystemTimeAsFileTime(&ft); /* never fails */
   return ft.dwHighDateTime ^ ft.dwLowDateTime;
 #  elif defined(__nocturne__)
-  /* Microseconds time is <20 bits entropy */
+  /* マイクロ秒の時刻の乱れは 20 bit より少ない */
   return (unsigned long)(n_clock_wall() / 1000 % 1000000);
 #  else
   struct timeval tv;
@@ -1134,8 +1134,8 @@ generate_hash_secret_salt(void) {
     return ENTROPY_DEBUG("getrandom", entropy);
   }
 #  elif defined(__nocturne__)
-  /* the system's entropy pool */
-  if (n_random(&entropy, sizeof(entropy)) >= 0) {
+  /* 系の乱数の溜め */
+  if (n_random((uint8_t *)&entropy, sizeof(entropy)) >= 0) {
     return ENTROPY_DEBUG("n_random", entropy);
   }
 #  endif

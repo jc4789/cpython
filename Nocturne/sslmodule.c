@@ -10,7 +10,7 @@
    SSLWantReadError と SSLWantWriteError を上げ、MemoryBIO の流れは運び手の無い byte の受け渡しになる。
    一つの流れの net_stream の呼出しは、流れの錠（mtx）で一つずつにする。錠は GIL を放してから取る。
 
-   信頼の根は、set_default_verify_paths がシステムの証明書の folder（KABI_FOLDER_CERTIFICATES）、load_verify_locations
+   信頼の根は、set_default_verify_paths がシステムの証明書のフォルダー（n_certificates_folder）、load_verify_locations
    が呼ぶ側の証明書。
 
    無いもの：client の証明書（load_cert_chain は server の身元だけ。server は CertificateRequest を送らない）、
@@ -132,7 +132,7 @@ typedef struct {
     bio_object *incoming, *outgoing;
     PyObject *identity_in_use;    /* server：net_stream が使う身元の capsule */
     net_stream *ns;               /* shutdown の後は NULL */
-    n_handle handle;              /* socket の流れ：今の呼出しの TCP の handle */
+    int32_t handle;               /* socket の流れ：今の呼び出しの TCP のハンドル */
     bool server_side, handshake_done, verified, no_anchors;
     PyObject *server_hostname;    /* str か None */
     mtx_t lock;                   /* net_stream の呼出しを一つずつに（GIL を放してから取る） */
@@ -865,6 +865,15 @@ read_document(PyObject *path)
     return data;
 }
 
+/* システムの証明書のフォルダーの名を buf に NUL で終えて書き、buf を返す。 */
+static const char *
+certificates_folder(char buf[_PY_PATH_MAX])
+{
+    n_result n = n_certificates_folder(buf, _PY_PATH_MAX - 1);
+    buf[n < 0 || n > _PY_PATH_MAX - 1 ? 0 : n] = '\0';
+    return buf;
+}
+
 /* folder の文書の証明書を全部 list へ（読めない文書は飛ばす）。足した数か、例外つきの -1。 */
 static Py_ssize_t
 folder_certificates(PyObject *list, const char *name)
@@ -874,8 +883,8 @@ folder_certificates(PyObject *list, const char *name)
         PyErr_SetFromErrnoWithFilename(PyExc_OSError, name);
         return -1;
     }
-    struct kabi_entry *entries = NULL;
-    n_result count = n_folder_entries(folder, &entries);
+    struct n_entry *entries;
+    n_result count = _Py_folder_list(folder, &entries);
     if (count < 0) {
         errno = (int)-count;
         PyErr_SetFromErrnoWithFilename(PyExc_OSError, name);
@@ -884,9 +893,15 @@ folder_certificates(PyObject *list, const char *name)
     Py_ssize_t added = 0;
     for (n_result i = 0; i < count; i++) {
         char path[_PY_PATH_MAX];
-        if (entries[i].kind == KABI_KIND_FOLDER || n_path_join(folder, entries[i].name, path, sizeof path) < 0) {
+        if (entries[i].kind == N_KIND_FOLDER) {
             continue;
         }
+        n_result joined = n_path_join(folder, strlen(folder), entries[i].name, strnlen(entries[i].name, sizeof entries[i].name),
+                                      path, sizeof path - 1);
+        if (joined < 0 || (size_t)joined > sizeof path - 1) {
+            continue;
+        }
+        path[joined] = '\0';
         PyObject *name = PyUnicode_DecodeFSDefault(path);
         PyObject *data = name == NULL ? NULL : read_document(name);
         Py_XDECREF(name);
@@ -897,12 +912,12 @@ folder_certificates(PyObject *list, const char *name)
         Py_ssize_t n = document_certificates(list, PyBytes_AS_STRING(data), (size_t)PyBytes_GET_SIZE(data));
         Py_DECREF(data);
         if (n < 0) {
-            free(entries);
+            PyMem_RawFree(entries);
             return -1;
         }
         added += n;
     }
-    free(entries);
+    PyMem_RawFree(entries);
     return added;
 }
 
@@ -1109,14 +1124,15 @@ static PyType_Spec bio_spec = {
 static n_result
 socket_receive(void *arg, void *buf, size_t len, uint64_t deadline)
 {
-    return tcp_recv(((socket_object *)arg)->handle, buf, len, deadline);
+    return n_tcp_receive_until((n_tcp){((socket_object *)arg)->handle}, (uint8_t *)buf, len, deadline, NULL, 0);
 }
 
 static n_result
 socket_send(void *arg, const void *buf, size_t len, uint64_t deadline)
 {
-    n_handle h = ((socket_object *)arg)->handle;
-    return deadline ? tcp_send_until(h, buf, len, deadline) : tcp_send_some(h, buf, len);
+    n_tcp tcp = {((socket_object *)arg)->handle};
+    return deadline ? n_tcp_send_until(tcp, (const uint8_t *)buf, len, 0, deadline, NULL, 0)
+                    : n_tcp_send(tcp, (const uint8_t *)buf, len, 0);
 }
 
 /* MemoryBIO の流れは GIL を持ったまま net_stream を呼ぶので、BIO はほかのスレッドと取り合わない。 */
@@ -1126,7 +1142,7 @@ bio_receive(void *arg, void *buf, size_t len, uint64_t Py_UNUSED(deadline))
     bio_object *in = ((socket_object *)arg)->incoming;
     size_t n = bio_pending(in);
     if (n == 0) {
-        return in->eof_written ? 0 : -KABI_ERR_NOT_READY;
+        return in->eof_written ? 0 : -N_ERR_NOT_READY;
     }
     if (n > len) {
         n = len;
@@ -1139,7 +1155,7 @@ bio_receive(void *arg, void *buf, size_t len, uint64_t Py_UNUSED(deadline))
 static n_result
 bio_send(void *arg, const void *buf, size_t len, uint64_t Py_UNUSED(deadline))
 {
-    return bio_put(((socket_object *)arg)->outgoing, buf, len) ? (n_result)len : -KABI_ERR_NO_MEMORY;
+    return bio_put(((socket_object *)arg)->outgoing, buf, len) ? (n_result)len : -N_ERR_NO_MEMORY;
 }
 
 /* ---- 流れの呼出し ---- */
@@ -1234,7 +1250,7 @@ raise_stream(socket_object *self, int err)
 /* 一つの公開の呼出しの準備：socket の流れは socket の handle と timeout の期限。 */
 struct op {
     bool bio;
-    uint64_t deadline;            /* 0：待たない、KABI_CLOCK_NEVER：限りなし */
+    uint64_t deadline;            /* 0：待たない、N_CLOCK_NEVER：限りなし */
     PyObject *sock;               /* 呼出しの間の socket（新しい参照） */
 };
 
@@ -1271,7 +1287,7 @@ op_begin(socket_object *self, struct op *op)
         raise_ssl(state->error, SSL_ERROR_SSL, NULL, "Underlying socket has been closed.");
         goto fail;
     }
-    n_handle h = _Py_fd_handle(fd);
+    int32_t h = _Py_fd_handle(fd);
     if (h < 0) {
         PyErr_SetFromErrno(PyExc_OSError);
         goto fail;
@@ -1281,7 +1297,7 @@ op_begin(socket_object *self, struct op *op)
         goto fail;
     }
     if (timeout == Py_None) {
-        op->deadline = KABI_CLOCK_NEVER;
+        op->deadline = N_CLOCK_NEVER;
     }
     else {
         PyTime_t t;
@@ -1320,7 +1336,7 @@ op_wait(socket_object *self, struct op *op, bool want_write, const char *what)
         }
         return -1;
     }
-    unsigned interest = (want_write ? KABI_EVENT_SENDABLE : KABI_EVENT_RECEIVABLE) | KABI_EVENT_CLOSED;
+    unsigned interest = (want_write ? N_EVENT_SENDABLE : N_EVENT_RECEIVABLE) | N_EVENT_CLOSED;
     for (;;) {
         int woke;
         Py_BEGIN_ALLOW_THREADS
@@ -1995,7 +2011,8 @@ anchor_document(context_object *c, const void **doc, size_t *len)
         if (all == NULL) {
             return -1;
         }
-        if (c->system_anchors && folder_certificates(all, KABI_FOLDER_CERTIFICATES) < 0) {
+        char system[_PY_PATH_MAX];
+        if (c->system_anchors && folder_certificates(all, certificates_folder(system)) < 0) {
             Py_DECREF(all);
             return -1;
         }
@@ -2740,7 +2757,8 @@ ssl_rand_status(PyObject *Py_UNUSED(module), PyObject *Py_UNUSED(ignored))
 static PyObject *
 ssl_get_default_verify_paths(PyObject *Py_UNUSED(module), PyObject *Py_UNUSED(ignored))
 {
-    return Py_BuildValue("(ssss)", "", "", "", KABI_FOLDER_CERTIFICATES);
+    char system[_PY_PATH_MAX];
+    return Py_BuildValue("(ssss)", "", "", "", certificates_folder(system));
 }
 
 static PyObject *

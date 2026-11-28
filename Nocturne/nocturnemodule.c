@@ -6,7 +6,7 @@
    Lib/subprocess.py launches apps with _launch. The functions speak of
    Python's descriptors (Nocturne/descriptors.c) and of the paths of C:
    (docs/nocturne-native-abi.md §3). A failure is an OSError whose errno is the
-   KABI_ERR_* code, which libc's errno.h names.
+   N_ERR_* code, which libc's errno.h names.
 
    Nocturne has no modes, links, fork or exec, so what Python's os has for them
    is not here. A name never has a link to follow, so follow_symlinks changes
@@ -20,7 +20,6 @@
 #include "pycore_signal.h"        // _PyOS_NocturneWait()
 #include "pycore_time.h"          // _PyTime_ObjectToTimespec()
 #include "descriptors.h"
-#include "nocturne_services.h"    // n_accounts_list()
 
 #include <errno.h>
 #include <signal.h>
@@ -304,7 +303,7 @@ stat_result_make(nocturne_state *state, const struct _Py_stat_struct *st)
 }
 
 static PyObject *
-stat_result_of_entry(nocturne_state *state, const struct kabi_entry *entry)
+stat_result_of_entry(nocturne_state *state, const struct n_entry *entry)
 {
     struct _Py_stat_struct st;
     _Py_entry_stat(entry, &st);
@@ -322,24 +321,44 @@ static struct {
     size_t count;
 } environment;
 
-/* The module's own copy of the environment. Called with the lock. */
+/* 起動の時の環境の index 番目の "名前=値" を、NUL で終えた PyMem_RawMalloc の領域で返す。NULL は記憶が足りない。 */
+static char *
+environment_launched(size_t index)
+{
+    size_t capacity = 256;
+    for (;;) {
+        char *text = PyMem_RawMalloc(capacity + 1);
+        if (text == NULL) {
+            return NULL;
+        }
+        n_result length = n_environment(index, text, capacity);
+        if (length < 0) {
+            text[0] = '\0';
+            return text;
+        }
+        if ((size_t)length <= capacity) {
+            text[length] = '\0';
+            return text;
+        }
+        PyMem_RawFree(text);
+        capacity = (size_t)length;
+    }
+}
+
+/* モジュール自身の環境の写し。錠を持って呼ぶ。 */
 static int
 environment_own(void)
 {
     if (environment.strings != NULL) {
         return 0;
     }
-    size_t count = 0;
-    char *const *launched = n_environment();
-    while (launched[count] != NULL) {
-        count++;
-    }
+    size_t count = n_environment_count();
     char **strings = PyMem_RawCalloc(count + 1, sizeof *strings);
     if (strings == NULL) {
         return -1;
     }
     for (size_t i = 0; i < count; i++) {
-        strings[i] = _PyMem_RawStrdup(launched[i]);
+        strings[i] = environment_launched(i);
         if (strings[i] == NULL) {
             for (size_t k = 0; k < i; k++) {
                 PyMem_RawFree(strings[k]);
@@ -374,7 +393,12 @@ environment_snapshot(void)
         return NULL;
     }
     PyMutex_Lock(&environment.lock);
-    char *const *strings = environment.strings != NULL ? environment.strings : n_environment();
+    if (environment_own() < 0) {
+        PyMutex_Unlock(&environment.lock);
+        Py_DECREF(list);
+        return PyErr_NoMemory();
+    }
+    char *const *strings = environment.strings;
     for (size_t i = 0; strings[i] != NULL; i++) {
         PyObject *b = PyBytes_FromString(strings[i]);
         if (b == NULL || PyList_Append(list, b) < 0) {
@@ -590,13 +614,13 @@ nocturne_listdir(PyObject *module, PyObject *args, PyObject *kwargs)
     }
     PyObject *result = NULL;
     char folder[_PY_PATH_MAX];
-    struct kabi_entry *entries = NULL;
+    struct n_entry *entries = NULL;
     n_result count = 0;
     if (path_complete(&path, folder) < 0) {
         goto done;
     }
     Py_BEGIN_ALLOW_THREADS
-    count = n_folder_entries(folder, &entries);
+    count = _Py_folder_list(folder, &entries);
     Py_END_ALLOW_THREADS
     if (count < 0) {
         raise_result(count, path.object);
@@ -611,7 +635,7 @@ nocturne_listdir(PyObject *module, PyObject *args, PyObject *kwargs)
         }
         PyList_SET_ITEM(result, i, name);
     }
-    free(entries);
+    PyMem_RawFree(entries);
 done:
     path_clear(&path);
     return result;
@@ -633,7 +657,7 @@ nocturne_mkdir(PyObject *module, PyObject *args, PyObject *kwargs)
     if (dir_fd_unavailable(dir_fd) == 0 && path_complete(&path, full) == 0) {
         n_result r;
         Py_BEGIN_ALLOW_THREADS
-        r = n_folder_create(full);
+        r = n_folder_create(full, strlen(full));
         Py_END_ALLOW_THREADS
         result = r < 0 ? raise_result(r, path.object) : Py_NewRef(Py_None);
     }
@@ -641,8 +665,8 @@ nocturne_mkdir(PyObject *module, PyObject *args, PyObject *kwargs)
     return result;
 }
 
-/* Removes the entry path names if it is of kind (KABI_KIND_FOLDER or
-   KABI_KIND_DOCUMENT); one of the other kind fails with mismatch. */
+/* Removes the entry path names if it is of kind (N_KIND_FOLDER or
+   N_KIND_DOCUMENT); one of the other kind fails with mismatch. */
 static PyObject *
 remove_entry(PyObject *args, PyObject *kwargs, const char *format, uint32_t kind, int mismatch)
 {
@@ -655,12 +679,12 @@ remove_entry(PyObject *args, PyObject *kwargs, const char *format, uint32_t kind
     PyObject *result = NULL;
     char full[_PY_PATH_MAX];
     if (dir_fd_unavailable(dir_fd) == 0 && path_complete(&path, full) == 0) {
-        struct kabi_entry entry;
+        struct n_entry entry;
         n_result r;
         Py_BEGIN_ALLOW_THREADS
-        r = n_entry_info(full, &entry);
+        r = _Py_entry_info(full, &entry);
         if (r >= 0) {
-            r = entry.kind == kind ? n_entry_remove(full) : -mismatch;
+            r = entry.kind == kind ? n_entry_remove(full, strlen(full)) : -mismatch;
         }
         Py_END_ALLOW_THREADS
         result = r < 0 ? raise_result(r, path.object) : Py_NewRef(Py_None);
@@ -672,19 +696,19 @@ remove_entry(PyObject *args, PyObject *kwargs, const char *format, uint32_t kind
 static PyObject *
 nocturne_rmdir(PyObject *module, PyObject *args, PyObject *kwargs)
 {
-    return remove_entry(args, kwargs, "O&|$O:rmdir", KABI_KIND_FOLDER, KABI_ERR_NOT_FOLDER);
+    return remove_entry(args, kwargs, "O&|$O:rmdir", N_KIND_FOLDER, N_ERR_NOT_FOLDER);
 }
 
 static PyObject *
 nocturne_remove(PyObject *module, PyObject *args, PyObject *kwargs)
 {
-    return remove_entry(args, kwargs, "O&|$O:remove", KABI_KIND_DOCUMENT, KABI_ERR_IS_FOLDER);
+    return remove_entry(args, kwargs, "O&|$O:remove", N_KIND_DOCUMENT, N_ERR_IS_FOLDER);
 }
 
 static PyObject *
 nocturne_unlink(PyObject *module, PyObject *args, PyObject *kwargs)
 {
-    return remove_entry(args, kwargs, "O&|$O:unlink", KABI_KIND_DOCUMENT, KABI_ERR_IS_FOLDER);
+    return remove_entry(args, kwargs, "O&|$O:unlink", N_KIND_DOCUMENT, N_ERR_IS_FOLDER);
 }
 
 /* rename never replaces an entry (FileExistsError), as on Windows; replace
@@ -705,7 +729,8 @@ move_entry(PyObject *args, PyObject *kwargs, const char *format, bool replace)
         && path_complete(&src, from) == 0 && path_complete(&dst, to) == 0) {
         n_result r;
         Py_BEGIN_ALLOW_THREADS
-        r = replace ? n_entry_replace(from, to) : n_entry_move(from, to);
+        r = replace ? n_entry_replace(from, strlen(from), to, strlen(to))
+                    : n_entry_move(from, strlen(from), to, strlen(to));
         Py_END_ALLOW_THREADS
         result = r < 0 ? raise_result2(r, src.object, dst.object) : Py_NewRef(Py_None);
     }
@@ -726,16 +751,37 @@ nocturne_replace(PyObject *module, PyObject *args, PyObject *kwargs)
     return move_entry(args, kwargs, "O&O&|$OO:replace", true);
 }
 
+/* 文を書く関数（out text）の結果を NUL で終えて buf に書く。入らなければ ENAMETOOLONG。0 か、errno つきの -1。 */
+static int
+folder_text(n_result (*get)(char *, size_t), char buf[_PY_PATH_MAX])
+{
+    n_result length = get(buf, _PY_PATH_MAX - 1);
+    if (length < 0 || length > _PY_PATH_MAX - 1) {
+        errno = length < 0 ? (int)-length : ENAMETOOLONG;
+        return -1;
+    }
+    buf[length] = '\0';
+    return 0;
+}
+
 static PyObject *
 nocturne_getcwd(PyObject *module, PyObject *Py_UNUSED(ignored))
 {
-    return PyUnicode_DecodeFSDefault(n_folder());
+    char folder[_PY_PATH_MAX];
+    if (folder_text(n_folder, folder) < 0) {
+        return PyErr_SetFromErrno(PyExc_OSError);
+    }
+    return PyUnicode_DecodeFSDefault(folder);
 }
 
 static PyObject *
 nocturne_getcwdb(PyObject *module, PyObject *Py_UNUSED(ignored))
 {
-    return PyBytes_FromString(n_folder());
+    char folder[_PY_PATH_MAX];
+    if (folder_text(n_folder, folder) < 0) {
+        return PyErr_SetFromErrno(PyExc_OSError);
+    }
+    return PyBytes_FromString(folder);
 }
 
 static PyObject *
@@ -751,7 +797,7 @@ nocturne_chdir(PyObject *module, PyObject *args, PyObject *kwargs)
     if (path_complete(&path, full) == 0) {
         n_result r;
         Py_BEGIN_ALLOW_THREADS
-        r = n_folder_set(full);
+        r = n_folder_set(full, strlen(full));
         Py_END_ALLOW_THREADS
         result = r < 0 ? raise_result(r, path.object) : Py_NewRef(Py_None);
     }
@@ -843,7 +889,7 @@ nocturne_utime(PyObject *module, PyObject *args, PyObject *kwargs)
     if (dir_fd_unavailable(dir_fd) == 0 && utime_modified(times, ns, &wall) == 0 && path_complete(&path, full) == 0) {
         n_result r;
         Py_BEGIN_ALLOW_THREADS
-        r = n_entry_set_modified(full, wall);
+        r = n_entry_set_modified(full, strlen(full), wall);
         Py_END_ALLOW_THREADS
         result = r < 0 ? raise_result(r, path.object) : Py_NewRef(Py_None);
     }
@@ -876,11 +922,11 @@ nocturne_truncate(PyObject *module, PyObject *args, PyObject *kwargs)
     else if (path_complete(&path, full) == 0) {
         n_result r;
         Py_BEGIN_ALLOW_THREADS
-        n_handle h = n_document_open(full, KABI_DOCUMENT_EDIT);
-        r = h;
-        if (h >= 0) {
-            r = n_document_set_size(h, (uint64_t)length);
-            n_result closed = n_handle_close(h);
+        n_document document;
+        r = n_document_open(full, strlen(full), N_DOCUMENT_ACCESS_EDIT, &document);
+        if (r >= 0) {
+            r = n_document_set_size(document, (uint64_t)length);
+            n_result closed = n_handle_close((n_handle){document.handle});
             if (r >= 0) {
                 r = closed;
             }
@@ -1089,20 +1135,20 @@ nocturne_dup2(PyObject *module, PyObject *args, PyObject *kwargs)
 static PyObject *
 nocturne_pipe(PyObject *module, PyObject *Py_UNUSED(ignored))
 {
-    n_handle ends[2];
-    n_result r = n_channel_pair(ends);
+    n_channel read_end, write_end;
+    n_result r = n_channel_pair(&write_end, &read_end);
     if (r < 0) {
         return raise_result(r, NULL);
     }
-    int read_fd = _Py_fd_adopt(ends[0], 1, 0);
+    int read_fd = _Py_fd_adopt(read_end.handle, 1, 0);
     if (read_fd < 0) {
-        n_handle_close(ends[0]);
-        n_handle_close(ends[1]);
+        n_handle_close((n_handle){read_end.handle});
+        n_handle_close((n_handle){write_end.handle});
         return PyErr_SetFromErrno(PyExc_OSError);
     }
-    int write_fd = _Py_fd_adopt(ends[1], 0, 1);
+    int write_fd = _Py_fd_adopt(write_end.handle, 0, 1);
     if (write_fd < 0) {
-        n_handle_close(ends[1]);
+        n_handle_close((n_handle){write_end.handle});
         _Py_fd_close(read_fd);
         return PyErr_SetFromErrno(PyExc_OSError);
     }
@@ -1148,14 +1194,14 @@ nocturne_get_terminal_size(PyObject *module, PyObject *args)
     if (!PyArg_ParseTuple(args, "|i:get_terminal_size", &fd)) {
         return NULL;
     }
-    n_handle h = _Py_fd_handle(fd);
+    int32_t h = _Py_fd_handle(fd);
     if (h < 0) {
         return PyErr_SetFromErrno(PyExc_OSError);
     }
-    struct n_terminal_size size;
+    struct n_terminal_grid size;
     n_result r;
     Py_BEGIN_ALLOW_THREADS
-    r = n_terminal_size(h, &size);
+    r = n_terminal_size((n_handle){h}, &size);
     Py_END_ALLOW_THREADS
     if (r < 0) {
         return raise_result(r, NULL);
@@ -1182,7 +1228,7 @@ typedef struct {
     PyObject *name;
     PyObject *path;
     PyObject *stat;               /* made by the first stat() */
-    struct kabi_entry entry;
+    struct n_entry entry;
 } DirEntry;
 
 static void
@@ -1224,7 +1270,7 @@ DirEntry_is_dir(PyObject *op, PyObject *args, PyObject *kwargs)
     if (DirEntry_follow(args, kwargs, "|$p:is_dir") < 0) {
         return NULL;
     }
-    return PyBool_FromLong(((DirEntry *)op)->entry.kind == KABI_KIND_FOLDER);
+    return PyBool_FromLong(((DirEntry *)op)->entry.kind == N_KIND_FOLDER);
 }
 
 static PyObject *
@@ -1233,7 +1279,7 @@ DirEntry_is_file(PyObject *op, PyObject *args, PyObject *kwargs)
     if (DirEntry_follow(args, kwargs, "|$p:is_file") < 0) {
         return NULL;
     }
-    return PyBool_FromLong(((DirEntry *)op)->entry.kind == KABI_KIND_DOCUMENT);
+    return PyBool_FromLong(((DirEntry *)op)->entry.kind == N_KIND_DOCUMENT);
 }
 
 static PyObject *
@@ -1310,7 +1356,7 @@ typedef struct {
     PyObject_HEAD
     path_arg path;                /* what scandir was given */
     char *folder;                 /* its complete path */
-    struct kabi_entry *batch;
+    struct n_entry *batch;
     Py_ssize_t batch_at, batch_count;
     uint64_t next;                /* the index of the next entry to list */
     bool last;                    /* the batch is the folder's last */
@@ -1344,17 +1390,22 @@ ScandirIterator_list(ScandirIterator *it)
 {
     n_result r;
     Py_BEGIN_ALLOW_THREADS
-    r = n_folder_list(it->folder, it->batch, SCANDIR_BATCH, it->next);
+    for (int i = 0; i < SCANDIR_BATCH; i++) {
+        it->batch[i].bytes = sizeof it->batch[i];
+    }
+    r = n_folder_list(it->folder, strlen(it->folder), it->batch, SCANDIR_BATCH, sizeof *it->batch, it->next);
     Py_END_ALLOW_THREADS
     if (r < 0) {
         ScandirIterator_close_impl(it);
         raise_result(r, it->path.object);
         return -1;
     }
-    it->next += (uint64_t)r;
+    /* r は next から後の項の全部の数で、書いたのは束に入る分 */
+    n_result written = r < SCANDIR_BATCH ? r : SCANDIR_BATCH;
+    it->next += (uint64_t)written;
     it->batch_at = 0;
-    it->batch_count = (Py_ssize_t)r;
-    it->last = r < SCANDIR_BATCH;
+    it->batch_count = (Py_ssize_t)written;
+    it->last = r <= SCANDIR_BATCH;
     return 0;
 }
 
@@ -1387,7 +1438,7 @@ ScandirIterator_iternext(PyObject *op)
     ScandirIterator *it = (ScandirIterator *)op;
     for (;;) {
         if (it->batch_at < it->batch_count) {
-            const struct kabi_entry *e = &it->batch[it->batch_at++];
+            const struct n_entry *e = &it->batch[it->batch_at++];
             nocturne_state *state = type_state(op);
             if (state == NULL) {
                 return NULL;
@@ -1529,52 +1580,83 @@ fail:
     return NULL;
 }
 
-/* Launches the program at the complete path. standard holds the descriptors
-   for the app's input, output and log streams (-1: none). Its handles are
-   given first, so that the app's handle i is given[i] (§5), and after them the
-   capabilities this app holds, as a shell's children's are, which the app
-   finds by kind. It reaches the terminal through those of its streams that
-   reach this app's. Returns the app's handle, or a negative n_result. */
-static n_handle
+/* 文の並びを、各文の後ろに 0 の byte を置いて一つの文に詰める（PyMem_RawMalloc）。NULL は記憶が足りない。 */
+static char *
+pack_strings(const char *const *strings, uint32_t count, size_t *bytes)
+{
+    size_t total = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        total += strlen(strings[i]) + 1;
+    }
+    char *packed = PyMem_RawMalloc(total > 0 ? total : 1);
+    if (packed == NULL) {
+        return NULL;
+    }
+    size_t at = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        size_t length = strlen(strings[i]) + 1;
+        memcpy(packed + at, strings[i], length);
+        at += length;
+    }
+    *bytes = total;
+    return packed;
+}
+
+/* 完全なパスのプログラムを起動する。standard はアプリの入力、出力、記録の流れの記述子（-1 は無し）。given のハンドルを
+   その順に渡すので、アプリのハンドル i は given[i]（§5）。流れのうちこのアプリの端末へつながるものが、子を端末へつなぐ。
+   アプリのハンドルの番号か、負の n_result を返す。 */
+static n_result
 launch_app(const char *program, const char **arguments, uint32_t argument_count, const char **environment_strings,
            uint32_t environment_count, const int standard[3], const char *folder, const int32_t *given,
            uint32_t given_count)
 {
-    int32_t streams[3];
+    n_handle streams[3];
     for (int i = 0; i < 3; i++) {
-        streams[i] = -1;
+        streams[i].handle = -1;
         if (standard[i] >= 0) {
-            streams[i] = _Py_fd_handle(standard[i]);
-            if (streams[i] < 0) {
-                return -KABI_ERR_NO_HANDLE;
+            streams[i].handle = _Py_fd_handle(standard[i]);
+            if (streams[i].handle < 0) {
+                return -N_ERR_NO_HANDLE;
             }
         }
     }
-    int32_t *handles = PyMem_RawMalloc(((size_t)given_count + KABI_CAP_COUNT) * sizeof *handles);
-    if (handles == NULL) {
-        return -KABI_ERR_NO_MEMORY;
+    size_t arguments_bytes = 0, environment_bytes = 0;
+    char *packed_arguments = pack_strings(arguments, argument_count, &arguments_bytes);
+    char *packed_environment = pack_strings(environment_strings, environment_count, &environment_bytes);
+    n_handle *handles = PyMem_RawMalloc((given_count > 0 ? given_count : 1) * sizeof *handles);
+    n_result r = -N_ERR_NO_MEMORY;
+    if (packed_arguments != NULL && packed_environment != NULL && handles != NULL) {
+        for (uint32_t i = 0; i < given_count; i++) {
+            handles[i].handle = given[i];
+        }
+        struct n_launch launch = {
+            .bytes = sizeof launch,
+            .arguments = packed_arguments,
+            .arguments_bytes = arguments_bytes,
+            .environment = packed_environment,
+            .environment_bytes = environment_bytes,
+            .handles = handles,
+            .handles_count = given_count,
+            .folder = folder,
+            .folder_bytes = strlen(folder),
+            .input = streams[0],
+            .output = streams[1],
+            .log = streams[2],
+            .interrupts = {-1},
+            .identity_grant = {-1},
+            .table = {-1},
+        };
+        launch.terminal = n_launch_terminal(streams[0], streams[1], streams[2]);
+        n_app app;
+        r = n_app_launch(program, strlen(program), &launch, &app);
+        if (r >= 0) {
+            r = app.handle;
+        }
     }
-    for (uint32_t i = 0; i < given_count; i++) {
-        handles[i] = given[i];
-    }
-    uint32_t caps = (uint32_t)n_caps_list(handles + given_count);
-    struct kabi_launch launch = {
-        .arguments = arguments,
-        .environment = environment_strings,
-        .handles = handles,
-        .argument_count = argument_count,
-        .environment_count = environment_count,
-        .handle_count = given_count + caps,
-        .folder = folder,
-        .input = streams[0],
-        .output = streams[1],
-        .log = streams[2],
-        .interrupts = -1,
-    };
-    launch.terminal = n_launch_terminal(&launch);
-    n_handle app = n_app_launch(program, &launch);
     PyMem_RawFree(handles);
-    return app;
+    PyMem_RawFree(packed_environment);
+    PyMem_RawFree(packed_arguments);
+    return r;
 }
 
 enum wait_outcome {
@@ -1586,22 +1668,23 @@ enum wait_outcome {
 
 /* Waits for the app's end until deadline. Called without the GIL. */
 static enum wait_outcome
-wait_app(n_handle app, uint64_t deadline, struct kabi_app_end *end, n_result *error)
+wait_app(int32_t app, uint64_t deadline, struct n_app_end *end, n_result *error)
 {
     for (;;) {
         n_result r;
         int woke = 1;
+        end->bytes = sizeof *end;
         if (_PyOS_NocturneInterruptible()) {
-            woke = _PyOS_NocturneWait(app, KABI_EVENT_APP_ENDED, NULL, 0, deadline);
-            r = n_app_result(app, 0, end);
+            woke = _PyOS_NocturneWait(app, N_EVENT_APP_ENDED, NULL, 0, deadline);
+            r = n_app_result((n_app){app}, 0, end);
         }
         else {
-            r = n_app_result(app, deadline, end);
+            r = n_app_result((n_app){app}, deadline, end);
         }
         if (r >= 0) {
             return WAIT_ENDED;
         }
-        if (r != -KABI_ERR_NOT_READY && r != -KABI_ERR_TIMEOUT) {
+        if (r != -N_ERR_NOT_READY && r != -N_ERR_TIMEOUT) {
             *error = r;
             return WAIT_FAILED;
         }
@@ -1691,7 +1774,7 @@ nocturne__launch(PyObject *module, PyObject *args)
     if (envp == NULL) {
         goto done;
     }
-    n_handle app;
+    n_result app;
     Py_BEGIN_ALLOW_THREADS
     app = launch_app(path, argv, argc, envp, envc, standard, cwd, given, given_count);
     Py_END_ALLOW_THREADS
@@ -1699,9 +1782,11 @@ nocturne__launch(PyObject *module, PyObject *args)
         raise_result(app, program.object);
     }
     else {
-        result = Py_BuildValue("(iL)", app, (long long)n_app_id(app));
+        uint64_t id = 0;
+        n_app_id((n_app){(int32_t)app}, &id);
+        result = Py_BuildValue("(iL)", (int)app, (long long)id);
         if (result == NULL) {
-            n_handle_close(app);
+            n_handle_close((n_handle){(int32_t)app});
         }
     }
 done:
@@ -1724,14 +1809,14 @@ done:
    SIGSEGV (an invalid access to storage), a stop SIGTERM (a termination
    request). os.app_end says exactly how it ended. */
 static int
-returncode_of(const struct kabi_app_end *end)
+returncode_of(const struct n_app_end *end)
 {
     switch (end->kind) {
-    case KABI_APP_END_EXITED:
+    case N_APP_END_KIND_EXITED:
         return end->exited.code;
-    case KABI_APP_END_ABORTED:
+    case N_APP_END_KIND_ABORTED:
         return -SIGABRT;
-    case KABI_APP_END_FAULT:
+    case N_APP_END_KIND_FAULT:
         /* AMD64 APM Vol. 2, Table 8-1 */
         switch (end->fault.vector) {
         case 0: case 4: case 16: case 19:   /* #DE, #OF, #MF, #XF */
@@ -1741,9 +1826,9 @@ returncode_of(const struct kabi_app_end *end)
         default:
             return -SIGSEGV;
         }
-    case KABI_APP_END_FOREIGN_CALL:
+    case N_APP_END_KIND_FOREIGN_CALL:
         return -SIGILL;
-    case KABI_APP_END_RESOURCE:
+    case N_APP_END_KIND_RESOURCE:
         return -SIGSEGV;
     default:
         return -SIGTERM;
@@ -1774,7 +1859,7 @@ static PyStructSequence_Field app_end_fields[] = {
 
 static PyStructSequence_Desc app_end_desc = {
     "os.app_end",
-    "app_end: how an app ended (struct kabi_app_end of common/abi.h).\n\n"
+    "app_end: how an app ended (struct n_app_end of common/abi.h).\n\n"
     "As a tuple: (kind, returncode). The other attributes are None where the\n"
     "kind gives them no value.",
     app_end_fields,
@@ -1782,50 +1867,51 @@ static PyStructSequence_Desc app_end_desc = {
 };
 
 static PyObject *
-app_end_make(nocturne_state *state, const struct kabi_app_end *end)
+app_end_make(nocturne_state *state, const struct n_app_end *end)
 {
     static const char *const kinds[] = {
-        [KABI_APP_END_EXITED] = "exited", [KABI_APP_END_ABORTED] = "aborted", [KABI_APP_END_FAULT] = "fault",
-        [KABI_APP_END_RESOURCE] = "resource", [KABI_APP_END_FOREIGN_CALL] = "foreign_call", [KABI_APP_END_STOPPED] = "stopped",
+        [N_APP_END_KIND_EXITED] = "exited", [N_APP_END_KIND_ABORTED] = "aborted", [N_APP_END_KIND_FAULT] = "fault",
+        [N_APP_END_KIND_RESOURCE] = "resource", [N_APP_END_KIND_FOREIGN_CALL] = "foreign_call", [N_APP_END_KIND_STOPPED] = "stopped",
     };
     static const char *const reasons[] = {
-        [KABI_APP_STOP_ASKED] = "asked", [KABI_APP_STOP_SESSION] = "session", [KABI_APP_STOP_POWER] = "power",
+        [N_APP_STOP_REASON_ASKED] = "asked", [N_APP_STOP_REASON_SESSION] = "session", [N_APP_STOP_REASON_POWER] = "power",
     };
     PyObject *items[APP_END_FIELDS] = {NULL};
     int failed = 0;
 #define PUT(i, value) (failed |= (items[i] = (value)) == NULL)
-    const struct kabi_app_place *at = NULL;
+    const struct n_app_place *at = NULL;
     char text[256];
-    size_t length = n_app_end_text(text, sizeof text, end);
+    n_result written = n_app_end_text(end, text, sizeof text);
+    size_t length = written < 0 ? 0 : (size_t)written < sizeof text ? (size_t)written : sizeof text;
     PUT(0, PyUnicode_FromString(end->kind < Py_ARRAY_LENGTH(kinds) && kinds[end->kind] ? kinds[end->kind] : "unknown"));
     PUT(1, PyLong_FromLong(returncode_of(end)));
     switch (end->kind) {
-    case KABI_APP_END_EXITED:
+    case N_APP_END_KIND_EXITED:
         PUT(2, PyLong_FromLong(end->exited.code));
         break;
-    case KABI_APP_END_ABORTED:
+    case N_APP_END_KIND_ABORTED:
         PUT(3, PyLong_FromLongLong(end->aborted.thread));
         PUT(4, PyLong_FromUnsignedLongLong(end->aborted.from));
         break;
-    case KABI_APP_END_FAULT:
+    case N_APP_END_KIND_FAULT:
         at = &end->fault.at;
         PUT(6, PyLong_FromUnsignedLongLong(end->fault.address));
         PUT(7, PyLong_FromUnsignedLong(end->fault.vector));
         PUT(8, PyLong_FromUnsignedLongLong(end->fault.error));
         break;
-    case KABI_APP_END_RESOURCE:
+    case N_APP_END_KIND_RESOURCE:
         at = &end->resource.at;
         PUT(6, PyLong_FromUnsignedLongLong(end->resource.address));
-        if (end->resource.resource == KABI_APP_RESOURCE_STACK) {
+        if (end->resource.resource == N_APP_RESOURCE_STACK) {
             PUT(9, PyUnicode_FromString("stack"));
         }
         break;
-    case KABI_APP_END_FOREIGN_CALL:
+    case N_APP_END_KIND_FOREIGN_CALL:
         at = &end->foreign_call.at;
         PUT(10, PyLong_FromUnsignedLongLong(end->foreign_call.call));
         break;
-    case KABI_APP_END_STOPPED: {
-        const struct kabi_app_stopped *s = &end->stopped;
+    case N_APP_END_KIND_STOPPED: {
+        const struct n_app_stopped *s = &end->stopped;
         PUT(11, PyUnicode_FromString(s->reason < Py_ARRAY_LENGTH(reasons) && reasons[s->reason] ? reasons[s->reason]
                                                                                               : "unknown"));
         PUT(12, PyLong_FromLongLong(s->by_app));
@@ -1836,7 +1922,7 @@ app_end_make(nocturne_state *state, const struct kabi_app_end *end)
     }
     if (at != NULL) {
         PUT(3, PyLong_FromLongLong(at->thread));
-        PUT(4, PyLong_FromUnsignedLongLong(at->rip));
+        PUT(4, PyLong_FromUnsignedLongLong(at->address));
         PUT(5, PyLong_FromUnsignedLong(at->cpu));
     }
     PUT(14, PyUnicode_DecodeUTF8(text, (Py_ssize_t)length, "replace"));
@@ -1863,7 +1949,7 @@ nocturne__wait(PyObject *module, PyObject *args)
     if (!PyArg_ParseTuple(args, "i|O:_wait", &app, &timeout)) {
         return NULL;
     }
-    uint64_t deadline = KABI_CLOCK_NEVER;
+    uint64_t deadline = N_CLOCK_NEVER;
     if (timeout != Py_None) {
         PyTime_t ns;
         if (_PyTime_FromSecondsObject(&ns, timeout, _PyTime_ROUND_TIMEOUT) < 0) {
@@ -1872,7 +1958,7 @@ nocturne__wait(PyObject *module, PyObject *args)
         deadline = ns <= 0 ? n_clock_monotonic() : n_clock_after((uint64_t)ns);
     }
     for (;;) {
-        struct kabi_app_end end;
+        struct n_app_end end = {.bytes = sizeof end};
         n_result error = 0;
         enum wait_outcome outcome;
         Py_BEGIN_ALLOW_THREADS
@@ -1902,7 +1988,7 @@ nocturne__stop(PyObject *module, PyObject *arg)
     if (fd_argument(arg, &app) < 0) {
         return NULL;
     }
-    n_result r = n_app_stop(app, KABI_APP_STOP_TREE);
+    n_result r = n_app_stop((n_app){app}, N_APP_STOP_OPTIONS_TREE);
     return r < 0 ? raise_result(r, NULL) : Py_NewRef(Py_None);
 }
 
@@ -1913,12 +1999,12 @@ nocturne__handle_close(PyObject *module, PyObject *arg)
     if (fd_argument(arg, &h) < 0) {
         return NULL;
     }
-    n_result r = n_handle_close(h);
+    n_result r = n_handle_close((n_handle){h});
     return r < 0 ? raise_result(r, NULL) : Py_NewRef(Py_None);
 }
 
 /* _app_open(id): a handle of the running app of identifier id, one this app
-   may touch (§13): it reports KABI_EVENT_APP_ENDED when the app ends. */
+   may touch (§13): it reports N_EVENT_APP_ENDED when the app ends. */
 static PyObject *
 nocturne__app_open(PyObject *module, PyObject *arg)
 {
@@ -1926,8 +2012,9 @@ nocturne__app_open(PyObject *module, PyObject *arg)
     if (id == -1 && PyErr_Occurred()) {
         return NULL;
     }
-    n_handle h = n_app_open(id);
-    return h < 0 ? raise_result(h, NULL) : PyLong_FromLong(h);
+    n_app app;
+    n_result r = n_app_open((uint64_t)id, &app);
+    return r < 0 ? raise_result(r, NULL) : PyLong_FromLong(app.handle);
 }
 
 /* _fd_adopt(handle, readable, writable): a descriptor for a handle this app
@@ -1953,7 +2040,7 @@ nocturne__fd_handle(PyObject *module, PyObject *arg)
     if (fd_argument(arg, &fd) < 0) {
         return NULL;
     }
-    n_handle h = _Py_fd_handle(fd);
+    int32_t h = _Py_fd_handle(fd);
     return h < 0 ? PyErr_SetFromErrno(PyExc_OSError) : PyLong_FromLong(h);
 }
 
@@ -1968,11 +2055,12 @@ nocturne__find_program(PyObject *module, PyObject *arg)
         return NULL;
     }
     char path[_PY_PATH_MAX];
-    bool found;
+    n_result found;
     Py_BEGIN_ALLOW_THREADS
-    found = find_program(name.narrow, path, sizeof path);
+    found = n_find_program(name.narrow, strlen(name.narrow), path, sizeof path);
     Py_END_ALLOW_THREADS
-    PyObject *result = found ? path_name(&name, path, strlen(path)) : Py_NewRef(Py_None);
+    bool fits = found >= 0 && (size_t)found <= sizeof path;
+    PyObject *result = fits ? path_name(&name, path, (size_t)found) : Py_NewRef(Py_None);
     path_clear(&name);
     return result;
 }
@@ -1991,13 +2079,19 @@ nocturne_system(PyObject *module, PyObject *args, PyObject *kwargs)
     PyObject *result = NULL, *strings = NULL, *keep = NULL;
     const char **envp = NULL;
     uint32_t envc = 0;
-    char sh[_PY_PATH_MAX];
+    char sh[_PY_PATH_MAX], folder[_PY_PATH_MAX];
     if (PySys_Audit("os.system", "(O)", command) < 0) {
         goto done;
     }
-    if (!find_program("sh", sh, sizeof sh)) {
+    n_result found = n_find_program("sh", 2, sh, sizeof sh - 1);
+    if (found < 0 || (size_t)found > sizeof sh - 1) {
         errno = ENOENT;
         PyErr_SetFromErrnoWithFilename(PyExc_OSError, "sh");
+        goto done;
+    }
+    sh[found] = '\0';
+    if (folder_text(n_folder, folder) < 0) {
+        PyErr_SetFromErrno(PyExc_OSError);
         goto done;
     }
     strings = environment_snapshot();
@@ -2010,21 +2104,21 @@ nocturne_system(PyObject *module, PyObject *args, PyObject *kwargs)
     }
     const char *argv[] = {"sh", "-c", PyBytes_AS_STRING(command), NULL};
     const int standard[3] = {0, 1, 2};
-    struct kabi_app_end end = {.kind = KABI_APP_END_EXITED};
+    struct n_app_end end = {.bytes = sizeof end, .kind = N_APP_END_KIND_EXITED};
     n_result error = 0;
     enum wait_outcome outcome = WAIT_FAILED;
     Py_BEGIN_ALLOW_THREADS
-    n_handle app = launch_app(sh, argv, 3, envp, envc, standard, n_folder(), NULL, 0);
+    n_result app = launch_app(sh, argv, 3, envp, envc, standard, folder, NULL, 0);
     if (app < 0) {
         error = app;
     }
     else {
-        outcome = wait_app(app, KABI_CLOCK_NEVER, &end, &error);
+        outcome = wait_app((int32_t)app, N_CLOCK_NEVER, &end, &error);
         if (outcome == WAIT_INTERRUPTED) {
-            n_app_stop(app, KABI_APP_STOP_TREE);
-            n_app_result(app, KABI_CLOCK_NEVER, &end);
+            n_app_stop((n_app){(int32_t)app}, N_APP_STOP_OPTIONS_TREE);
+            n_app_result((n_app){(int32_t)app}, N_CLOCK_NEVER, &end);
         }
-        n_handle_close(app);
+        n_handle_close((n_handle){(int32_t)app});
     }
     Py_END_ALLOW_THREADS
     switch (outcome) {
@@ -2058,22 +2152,38 @@ nocturne_getpid(PyObject *module, PyObject *Py_UNUSED(ignored))
 static PyObject *
 nocturne_getppid(PyObject *module, PyObject *Py_UNUSED(ignored))
 {
-    n_result r = n_app_parent();
-    return r < 0 ? raise_result(r, NULL) : PyLong_FromLongLong(r);
+    uint64_t parent;
+    n_result r = n_app_parent(&parent);
+    return r < 0 ? raise_result(r, NULL) : PyLong_FromUnsignedLongLong(parent);
 }
 
 /* The name of the user this app runs for. */
 static PyObject *
 nocturne_getlogin(PyObject *module, PyObject *Py_UNUSED(ignored))
 {
-    struct kabi_identity self;
+    struct n_identity self;
     n_result r = n_identity_self(&self);
     if (r < 0) {
         return raise_result(r, NULL);
     }
-    struct kabi_account *accounts = NULL;
+    /* 数を聞いてから読む。その間に増えれば読み直す */
+    struct n_account *accounts = NULL;
     Py_BEGIN_ALLOW_THREADS
-    r = n_accounts_list(&accounts);
+    r = n_accounts_list(NULL, 0);
+    while (r >= 0) {
+        size_t capacity = (size_t)r + 1;
+        accounts = PyMem_RawCalloc(capacity, sizeof *accounts);
+        if (accounts == NULL) {
+            r = -N_ERR_NO_MEMORY;
+            break;
+        }
+        r = n_accounts_list(accounts, capacity);
+        if (r >= 0 && (size_t)r <= capacity) {
+            break;
+        }
+        PyMem_RawFree(accounts);
+        accounts = NULL;
+    }
     Py_END_ALLOW_THREADS
     if (r < 0) {
         return raise_result(r, NULL);
@@ -2087,9 +2197,9 @@ nocturne_getlogin(PyObject *module, PyObject *Py_UNUSED(ignored))
             }
         }
     }
-    free(accounts);
+    PyMem_RawFree(accounts);
     if (name == NULL && !PyErr_Occurred()) {
-        raise_result(-KABI_ERR_NOT_FOUND, NULL);
+        raise_result(-N_ERR_NOT_FOUND, NULL);
     }
     return name;
 }
@@ -2098,23 +2208,31 @@ nocturne_getlogin(PyObject *module, PyObject *Py_UNUSED(ignored))
 static PyObject *
 nocturne__user_folder(PyObject *module, PyObject *Py_UNUSED(ignored))
 {
-    return PyUnicode_DecodeFSDefault(n_user_folder());
+    char folder[_PY_PATH_MAX];
+    if (folder_text(n_user_folder, folder) < 0) {
+        return PyErr_SetFromErrno(PyExc_OSError);
+    }
+    return PyUnicode_DecodeFSDefault(folder);
 }
 
 static PyObject *
 nocturne__temp_folder(PyObject *module, PyObject *Py_UNUSED(ignored))
 {
-    return PyUnicode_DecodeFSDefault(n_temp_folder());
+    char folder[_PY_PATH_MAX];
+    if (folder_text(n_temp_folder, folder) < 0) {
+        return PyErr_SetFromErrno(PyExc_OSError);
+    }
+    return PyUnicode_DecodeFSDefault(folder);
 }
 
 static PyObject *
 nocturne_cpu_count(PyObject *module, PyObject *Py_UNUSED(ignored))
 {
-    struct kabi_cpuinfo info;
-    if (cpu_info(&info) < 0 || info.online_cpus == 0) {
+    struct n_processors info = {.bytes = sizeof info};
+    if (n_cpu_info(&info) < 0 || info.scheduler == 0) {
         Py_RETURN_NONE;
     }
-    return PyLong_FromUnsignedLong(info.online_cpus);
+    return PyLong_FromUnsignedLong(info.scheduler);
 }
 
 static PyObject *

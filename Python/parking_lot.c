@@ -8,7 +8,7 @@
 #include "pycore_semaphore.h"     // _PySemaphore
 #ifdef __nocturne__
 #  include "pycore_signal.h"      // _PyOS_NocturneWait()
-#  include "nocturne.h"           // wake_address()
+#  include <nocturne/core.h>      // n_wake_address()
 #endif
 #include "pycore_time.h"          // _PyTime_Add()
 
@@ -155,9 +155,8 @@ _PySemaphore_Wait(_PySemaphore *sema, PyTime_t timeout)
             wait, GetLastError(), sema->platform_sem);
     }
 #elif defined(__nocturne__)
-    // As on Windows, a wait of the main thread stops for SIGINT
-    // (_PyOS_NocturneWait).
-    uint64_t deadline = timeout < 0 ? KABI_CLOCK_NEVER : n_clock_after((uint64_t)timeout);
+    // Windows と同じく、主のスレッドの待ちは SIGINT で止まる（_PyOS_NocturneWait）。
+    uint64_t deadline = timeout < 0 ? N_CLOCK_NEVER : n_clock_after((uint64_t)timeout);
     for (;;) {
         uint32_t count = __atomic_load_n(&sema->count, __ATOMIC_ACQUIRE);
         if (count > 0) {
@@ -270,7 +269,7 @@ _PySemaphore_Wakeup(_PySemaphore *sema)
     }
 #elif defined(__nocturne__)
     __atomic_add_fetch(&sema->count, 1, __ATOMIC_RELEASE);
-    wake_address(&sema->count, 1);
+    n_wake_address((size_t)&sema->count, 1);
 #elif defined(_Py_USE_SEMAPHORES)
     int err = sem_post(&sema->platform_sem);
     if (err != 0) {

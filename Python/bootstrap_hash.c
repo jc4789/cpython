@@ -12,7 +12,7 @@
 #  include <windows.h>
 #  include <bcrypt.h>
 #elif defined(__nocturne__)
-#  include "nocturne.h"           // n_random()
+#  include <nocturne/core.h>           // n_random()
 #else
 #  include <fcntl.h>              // O_RDONLY
 #  ifdef HAVE_SYS_STAT_H

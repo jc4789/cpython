@@ -19,7 +19,7 @@
 #  include <sys/resource.h>       // getrusage(RUSAGE_SELF)
 #endif
 #ifdef __nocturne__
-#  include "nocturne.h"           // n_app_cpu_ns(), n_clock_after()
+#  include <nocturne/core.h>           // n_app_cpu_ns(), n_clock_after()
 #  include "pycore_signal.h"      // _PyOS_NocturneWait()
 #endif
 #ifdef QUICKWIN

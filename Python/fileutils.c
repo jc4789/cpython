@@ -2866,7 +2866,13 @@ _Py_wgetcwd(wchar_t *buf, size_t buflen)
     size_t len;
 
 #ifdef __nocturne__
-    const char *fname = n_folder();
+    char fname[_PY_PATH_MAX];
+    n_result folder = n_folder(fname, sizeof(fname) - 1);
+    if (folder < 0 || (size_t)folder > sizeof(fname) - 1) {
+        errno = folder < 0 ? (int)-folder : ENAMETOOLONG;
+        return NULL;
+    }
+    fname[folder] = '\0';
 #else
     char fname[MAXPATHLEN];
     if (getcwd(fname, Py_ARRAY_LENGTH(fname)) == NULL)
@@ -3526,18 +3532,17 @@ _Py_isatty(int fd)
 #endif
 }
 
-/* The descriptor of a C stream. On Nocturne only the standard streams have
-   one: stdin, stdout and stderr read and write the app's input, output and
-   log streams (n_input, n_output, n_log), which are Python's descriptors 0, 1
-   and 2 (Nocturne/descriptors.c). */
+/* C の流れの記述子。Nocturne で記述子を持つのは標準の流れだけ：stdin、stdout、stderr はアプリの入力、出力、記録の
+   流れ（n_input、n_output、n_log）を読み書きし、それが Python の記述子 0、1、2（Nocturne/descriptors.c）。 */
 int
 _Py_stream_fd(FILE *stream)
 {
 #ifdef __nocturne__
-    const n_handle standard[3] = {n_input(), n_output(), n_log()};
+    n_result (*const standard[3])(n_handle *) = {n_input, n_output, n_log};
     int fd = stream == stdin ? 0 : stream == stdout ? 1 : stream == stderr ? 2 : -1;
-    n_handle h = n_stream_handle(stream);
-    if (fd >= 0 && h >= 0 && h == standard[fd]) {
+    int h = n_stream_handle(stream);
+    n_handle given;
+    if (fd >= 0 && h >= 0 && standard[fd](&given) >= 0 && h == given.handle) {
         return fd;
     }
     errno = EBADF;
@@ -3547,12 +3552,13 @@ _Py_stream_fd(FILE *stream)
 #endif
 }
 
-/* Whether the C stream reaches a terminal. */
+/* C の流れが端末へつながるか。 */
 int
 _Py_stream_isatty(FILE *stream)
 {
 #ifdef __nocturne__
-    return n_terminal(n_stream_handle(stream));
+    int h = n_stream_handle(stream);
+    return h >= 0 && n_terminal((n_handle){h});
 #else
     return _Py_isatty(fileno(stream));
 #endif

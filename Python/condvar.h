@@ -312,14 +312,13 @@ PyCOND_BROADCAST(PyCOND_T *cv)
 
 #elif defined(__nocturne__)
 /*
- * Nocturne: address waits (docs/nocturne-native-abi.md §5). The mutex is the
- * three-state one: 0 unlocked, 1 locked, 2 locked with waiters, so that an
- * unlock without waiters makes no call. A wait on the condition sleeps while
- * its sequence is the one read under the mutex: a signal or a broadcast in
- * between changes it, so no wakeup is lost.
+ * Nocturne：番地の待ち（docs/nocturne-native-abi.md §5）。錠は三つの状態を持つ：0 は開き、1 は閉じ、2 は待つ者の
+ * いる閉じ。待つ者がいなければ、開きは呼び出しをしない。条件の待ちは、その番号が錠の下で読んだ番号の間眠る：
+ * その間の signal と broadcast が番号を変えるので、起こしを失わない。
  */
 
-#include "nocturne.h"
+#include <nocturne/core/thread.h>
+#include <nocturne/core/time.h>
 
 Py_LOCAL_INLINE(int)
 PyMUTEX_INIT(PyMUTEX_T *mut)
@@ -346,7 +345,7 @@ PyMUTEX_LOCK(PyMUTEX_T *mut)
         state = __atomic_exchange_n(&mut->state, 2, __ATOMIC_ACQUIRE);
     }
     while (state != 0) {
-        wait_on_address(&mut->state, 2, KABI_CLOCK_NEVER);
+        n_wait_on_address((size_t)&mut->state, 2, N_CLOCK_NEVER);
         state = __atomic_exchange_n(&mut->state, 2, __ATOMIC_ACQUIRE);
     }
     return 0;
@@ -356,7 +355,7 @@ Py_LOCAL_INLINE(int)
 PyMUTEX_UNLOCK(PyMUTEX_T *mut)
 {
     if (__atomic_exchange_n(&mut->state, 0, __ATOMIC_RELEASE) == 2) {
-        wake_address(&mut->state, 1);
+        n_wake_address((size_t)&mut->state, 1);
     }
     return 0;
 }
@@ -378,7 +377,7 @@ Py_LOCAL_INLINE(int)
 PyCOND_SIGNAL(PyCOND_T *cond)
 {
     __atomic_add_fetch(&cond->sequence, 1, __ATOMIC_RELEASE);
-    wake_address(&cond->sequence, 1);
+    n_wake_address((size_t)&cond->sequence, 1);
     return 0;
 }
 
@@ -386,7 +385,7 @@ Py_LOCAL_INLINE(int)
 PyCOND_BROADCAST(PyCOND_T *cond)
 {
     __atomic_add_fetch(&cond->sequence, 1, __ATOMIC_RELEASE);
-    wake_address(&cond->sequence, 0);
+    n_wake_address((size_t)&cond->sequence, 0);
     return 0;
 }
 
@@ -396,15 +395,15 @@ _PyCOND_WAIT_UNTIL(PyCOND_T *cond, PyMUTEX_T *mut, uint64_t deadline)
 {
     uint32_t sequence = __atomic_load_n(&cond->sequence, __ATOMIC_ACQUIRE);
     PyMUTEX_UNLOCK(mut);
-    n_result r = wait_on_address(&cond->sequence, sequence, deadline);
+    n_result r = n_wait_on_address((size_t)&cond->sequence, sequence, deadline);
     PyMUTEX_LOCK(mut);
-    return r == -KABI_ERR_TIMEOUT;
+    return r == -N_ERR_TIMEOUT;
 }
 
 Py_LOCAL_INLINE(int)
 PyCOND_WAIT(PyCOND_T *cond, PyMUTEX_T *mut)
 {
-    _PyCOND_WAIT_UNTIL(cond, mut, KABI_CLOCK_NEVER);
+    _PyCOND_WAIT_UNTIL(cond, mut, N_CLOCK_NEVER);
     return 0;
 }
 

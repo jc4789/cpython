@@ -20,7 +20,7 @@
 #  include "posixmodule.h"        // _PyLong_FromUid()
 #endif
 #ifdef __nocturne__
-#  include "nocturne.h"           // n_interrupts(), wait_on_address()
+#  include <nocturne/core.h>           // n_interrupts(), n_wait_on_address()
 #endif
 #ifdef MS_WINDOWS
 #  include "socketmodule.h"       // SOCKET_T
@@ -268,52 +268,47 @@ report_wakeup_send_error(void* data)
 #endif   /* MS_WINDOWS */
 
 #ifdef __nocturne__
-/* Nocturne's Ctrl+C (docs/nocturne-native-abi.md §4). The shell sends a
-   message for each Ctrl+C on the channel n_interrupts() names. A thread of
-   the interpreter takes them and delivers each batch with ISO C's
-   raise(SIGINT), as the console's handler thread does on Windows: the handler
-   is signal_handler while Python handles SIGINT, SIG_IGN ignores it and
-   SIG_DFL ends the app. While the thread runs, the app claims Ctrl+C
-   (n_interrupts_claim): the shell sends it instead of stopping the app.
-   signal_handler counts the delivery in `delivered` and
-   wakes it, and a wait of the main thread watches that word
-   (_PyOS_NocturneWait), as one on Windows waits for sigint_event too.
+/* Nocturne の Ctrl+C（docs/nocturne-native-abi.md §4）。シェルは Ctrl+C ごとに、n_interrupts が名指すチャネルへ
+   メッセージを送る。インタープリターのスレッドの一つがそれを受け、まとめて ISO C の raise(SIGINT) で届ける（Windows の
+   コンソールの handler のスレッドと同じ）：Python が SIGINT を扱う間の handler は signal_handler、SIG_IGN は無視し、
+   SIG_DFL はアプリを終える。スレッドが動く間、アプリは Ctrl+C を引き受ける（n_interrupts_claim）：シェルはアプリを
+   止める代わりに知らせを送る。signal_handler は届けた数を `delivered` に数えて起こし、主のスレッドの待ちはその語を
+   見る（_PyOS_NocturneWait。Windows の待ちが sigint_event も待つのと同じ）。
 
-   The libc's n_line_read takes Ctrl+C itself while it reads a terminal line
-   (Nocturne/descriptors.c, _Py_terminal_line). Around it the thread keeps off
-   the channel: `pausers` counts the readers, and the thread sets `parked`
-   once it holds nothing it took. A pause, a resume and the stop change
-   `generation`, the word the thread waits on, and the thread takes Ctrl+C only
-   when the word did not change across its wait. */
+   中核のライブラリーの n_line_read は、端末の行を読む間 Ctrl+C を自分で受ける（Nocturne/descriptors.c の
+   _Py_terminal_line）。その前後でスレッドはチャネルから離れる：`pausers` は読み手を数え、スレッドは受けたものを
+   持たなくなると `parked` を立てる。止め、再開、終わりは、スレッドが待つ語 `generation` を変え、スレッドは待ちの
+   前後で語が変わらなかった時だけ Ctrl+C を受ける。 */
 static struct {
-    int watcher;                /* the thread's id, 0 without one */
+    uint32_t watcher;           /* スレッドの番号。無ければ 0 */
     int stop;
     uint32_t delivered;
     uint32_t generation;
     uint32_t pausers;
     uint32_t parked;
-    n_handle main_queue;        /* the main thread's event queue, -1 */
-    n_handle net_end;           /* 主のスレッドの網の取り消しの channel の端、-1 */
-    n_handle net_peer;          /* its peer, which a delivery closes; -1 */
+    int32_t main_queue;         /* 主のスレッドのイベントキュー、-1 */
+    int32_t net_end;            /* 主のスレッドの網の取り消しのチャネルの端、-1 */
+    int32_t net_peer;           /* その相手。届けると閉じる。-1 */
 } nocturne_sigint = {.main_queue = -1, .net_end = -1, .net_peer = -1};
 
 static void
 nocturne_sigint_delivered(void)
 {
     __atomic_add_fetch(&nocturne_sigint.delivered, 1, __ATOMIC_RELEASE);
-    wake_address(&nocturne_sigint.delivered, 0);
-    n_handle peer = __atomic_exchange_n(&nocturne_sigint.net_peer, -1, __ATOMIC_ACQ_REL);
+    n_wake_address((size_t)&nocturne_sigint.delivered, 0);
+    int32_t peer = __atomic_exchange_n(&nocturne_sigint.net_peer, -1, __ATOMIC_ACQ_REL);
     if (peer >= 0) {
-        n_handle_close(peer);
+        n_handle_close((n_handle){peer});
     }
 }
 
-/* queue watches n_interrupts() with token 1. */
+/* キュー context は n_interrupts のチャネルを token 1 で見張る。 */
 static void
-nocturne_interrupt_watcher(void *arg)
+nocturne_interrupt_watcher(void *context)
 {
-    n_handle queue = (n_handle)(intptr_t)arg;
-    n_thread_name("python Ctrl+C");
+    n_events queue = {(int32_t)(intptr_t)context};
+    static const char name[] = "python Ctrl+C";
+    n_thread_name(name, sizeof name - 1);
     for (;;) {
         uint32_t generation = __atomic_load_n(&nocturne_sigint.generation, __ATOMIC_ACQUIRE);
         if (__atomic_load_n(&nocturne_sigint.stop, __ATOMIC_ACQUIRE)) {
@@ -321,16 +316,16 @@ nocturne_interrupt_watcher(void *arg)
         }
         if (__atomic_load_n(&nocturne_sigint.pausers, __ATOMIC_ACQUIRE)) {
             __atomic_store_n(&nocturne_sigint.parked, 1, __ATOMIC_RELEASE);
-            wake_address(&nocturne_sigint.parked, 0);
-            wait_on_address(&nocturne_sigint.generation, generation, KABI_CLOCK_NEVER);
+            n_wake_address((size_t)&nocturne_sigint.parked, 0);
+            n_wait_on_address((size_t)&nocturne_sigint.generation, generation, N_CLOCK_NEVER);
             continue;
         }
         __atomic_store_n(&nocturne_sigint.parked, 0, __ATOMIC_RELEASE);
-        if (n_events_watch_address(queue, &nocturne_sigint.generation, generation, 2) < 0) {
+        if (n_events_watch_address(queue, (size_t)&nocturne_sigint.generation, generation, 2) < 0) {
             continue;
         }
-        struct kabi_event events[2];
-        n_events_wait(queue, events, 2, KABI_CLOCK_NEVER);
+        struct n_notification notifications[2];
+        n_events_wait(queue, notifications, 2, N_CLOCK_NEVER);
         n_events_unwatch(queue, 2);
         if (__atomic_load_n(&nocturne_sigint.generation, __ATOMIC_ACQUIRE) != generation) {
             continue;
@@ -339,32 +334,32 @@ nocturne_interrupt_watcher(void *arg)
             raise(SIGINT);
         }
     }
-    n_handle_close(queue);
+    n_handle_close((n_handle){queue.handle});
 }
 
 static void
 nocturne_interrupts_start(void)
 {
-    n_handle interrupts = n_interrupts();
-    if (interrupts < 0 || n_handle_kind(interrupts) != KABI_KIND_CHANNEL) {
+    n_channel interrupts;
+    if (n_interrupts(&interrupts) < 0) {
         return;
     }
-    n_handle queue = n_events_create();
-    if (queue < 0) {
+    n_events queue;
+    if (n_events_create(&queue) < 0) {
         return;
     }
     nocturne_sigint.stop = 0;
-    n_result tid = -1;
-    if (n_events_watch(queue, interrupts, KABI_EVENT_RECEIVABLE, 1) >= 0) {
-        tid = thread_create(nocturne_interrupt_watcher, (void *)(intptr_t)queue);
+    n_result thread = -1;
+    if (n_events_watch(queue, (n_handle){interrupts.handle}, N_EVENT_RECEIVABLE, 1) >= 0) {
+        thread = n_thread_create(nocturne_interrupt_watcher, (void *)(intptr_t)queue.handle, 0);
     }
-    if (tid > 0) {
-        nocturne_sigint.watcher = (int)tid;
-        /* the shell sends Ctrl+C here instead of stopping the app */
+    if (thread > 0) {
+        nocturne_sigint.watcher = (uint32_t)thread;
+        /* シェルはアプリを止める代わりに Ctrl+C をここへ送る */
         n_interrupts_claim();
     }
     else {
-        n_handle_close(queue);
+        n_handle_close((n_handle){queue.handle});
     }
 }
 
@@ -376,12 +371,12 @@ nocturne_interrupts_stop(void)
     }
     __atomic_store_n(&nocturne_sigint.stop, 1, __ATOMIC_RELEASE);
     __atomic_add_fetch(&nocturne_sigint.generation, 1, __ATOMIC_RELEASE);
-    wake_address(&nocturne_sigint.generation, 0);
-    thread_join(nocturne_sigint.watcher);
+    n_wake_address((size_t)&nocturne_sigint.generation, 0);
+    n_thread_join(nocturne_sigint.watcher);
     nocturne_sigint.watcher = 0;
     n_interrupts_release();
     if (nocturne_sigint.main_queue >= 0) {
-        n_handle_close(nocturne_sigint.main_queue);
+        n_handle_close((n_handle){nocturne_sigint.main_queue});
         nocturne_sigint.main_queue = -1;
     }
 }
@@ -2229,61 +2224,61 @@ _PyOS_NocturneInterruptible(void)
 }
 
 int
-_PyOS_NocturneWait(int h, unsigned int interest, volatile unsigned int *address,
-                   unsigned int expected, unsigned long long deadline)
+_PyOS_NocturneWait(int32_t h, uint32_t interest, volatile uint32_t *address,
+                   uint32_t expected, uint64_t deadline)
 {
     if (!_PyOS_NocturneInterruptible()) {
         if (h >= 0) {
-            /* a socket's connect waits so on any thread */
+            /* socket の connect はどのスレッドでもこう待つ */
             assert(address == NULL);
-            n_handle queue = n_events_create();
-            if (queue < 0) {
+            n_events queue;
+            if (n_events_create(&queue) < 0) {
                 return 1;
             }
-            struct kabi_event event;
-            n_result count = n_events_watch(queue, h, interest, 1);
+            struct n_notification notification;
+            n_result count = n_events_watch(queue, (n_handle){h}, interest, 1);
             if (count >= 0) {
-                count = n_events_wait(queue, &event, 1, deadline);
+                count = n_events_wait(queue, &notification, 1, deadline);
             }
-            n_handle_close(queue);
-            return count == 0 ? 0 : 1;
+            n_handle_close((n_handle){queue.handle});
+            return count == -N_ERR_TIMEOUT ? 0 : 1;
         }
         if (address == NULL) {
             n_sleep_until(deadline);
             return 0;
         }
-        return wait_on_address(address, expected, deadline) == -KABI_ERR_TIMEOUT ? 0 : 1;
+        return n_wait_on_address((size_t)address, expected, deadline) == -N_ERR_TIMEOUT ? 0 : 1;
     }
-    /* A delivery after this read changes the word; one before it has set
-       the tripped flag already. */
+    /* この読みの後の配りは語を変える。前の配りはもう tripped を立てている。 */
     uint32_t seen = __atomic_load_n(&nocturne_sigint.delivered, __ATOMIC_ACQUIRE);
     if (_Py_atomic_load_int(&Handlers[SIGINT].tripped)) {
         return -1;
     }
     if (nocturne_sigint.main_queue < 0) {
-        nocturne_sigint.main_queue = n_events_create();
-        if (nocturne_sigint.main_queue < 0) {
+        n_events created;
+        if (n_events_create(&created) < 0) {
             return 1;
         }
+        nocturne_sigint.main_queue = created.handle;
     }
-    n_handle queue = nocturne_sigint.main_queue;
+    n_events queue = {nocturne_sigint.main_queue};
     int result = 1;
-    if (h >= 0 && n_events_watch(queue, h, interest, 1) < 0) {
+    if (h >= 0 && n_events_watch(queue, (n_handle){h}, interest, 1) < 0) {
         return 1;
     }
-    if (address != NULL && n_events_watch_address(queue, address, expected, 2) < 0) {
+    if (address != NULL && n_events_watch_address(queue, (size_t)address, expected, 2) < 0) {
         goto done;
     }
-    if (n_events_watch_address(queue, &nocturne_sigint.delivered, seen, 3) < 0) {
+    if (n_events_watch_address(queue, (size_t)&nocturne_sigint.delivered, seen, 3) < 0) {
         result = -1;
         goto done;
     }
-    struct kabi_event events[3];
-    n_result count = n_events_wait(queue, events, 3, deadline);
+    struct n_notification notifications[3];
+    n_result count = n_events_wait(queue, notifications, 3, deadline);
     if (__atomic_load_n(&nocturne_sigint.delivered, __ATOMIC_ACQUIRE) != seen) {
         result = -1;
     }
-    else if (count == 0) {
+    else if (count == -N_ERR_TIMEOUT) {
         result = 0;
     }
 done:
@@ -2293,64 +2288,69 @@ done:
     return result;
 }
 
-long
-_PyOS_NocturneWaitEvents(int queue, struct kabi_event *events, unsigned long max,
-                         unsigned long long deadline)
+n_result
+_PyOS_NocturneWaitEvents(n_events queue, struct n_notification *notifications, size_t capacity,
+                         uint64_t deadline)
 {
     if (!_PyOS_NocturneInterruptible()) {
-        return (long)n_events_wait(queue, events, max, deadline);
+        n_result count = n_events_wait(queue, notifications, capacity, deadline);
+        return count == -N_ERR_TIMEOUT ? 0 : count;
     }
     uint32_t seen = __atomic_load_n(&nocturne_sigint.delivered, __ATOMIC_ACQUIRE);
     if (_Py_atomic_load_int(&Handlers[SIGINT].tripped)) {
-        return -1;
+        return -N_ERR_CANCELLED;
     }
-    if (n_events_watch_address(queue, &nocturne_sigint.delivered, seen,
-                               _PY_NOCTURNE_SIGINT_TOKEN) < 0) {
-        return -1;
+    n_result r = n_events_watch_address(queue, (size_t)&nocturne_sigint.delivered, seen,
+                                        _PY_NOCTURNE_SIGINT_TOKEN);
+    if (r < 0) {
+        return r;
     }
-    n_result count = n_events_wait(queue, events, max, deadline);
+    n_result count = n_events_wait(queue, notifications, capacity, deadline);
     n_events_unwatch(queue, _PY_NOCTURNE_SIGINT_TOKEN);
     if (__atomic_load_n(&nocturne_sigint.delivered, __ATOMIC_ACQUIRE) != seen) {
-        return -1;
+        return -N_ERR_CANCELLED;
     }
-    long kept = 0;
-    for (long i = 0; i < count; i++) {
-        if (events[i].token != _PY_NOCTURNE_SIGINT_TOKEN) {
-            events[kept++] = events[i];
+    if (count < 0) {
+        return count == -N_ERR_TIMEOUT ? 0 : count;
+    }
+    n_result kept = 0;
+    for (n_result i = 0; i < count; i++) {
+        if (notifications[i].token != _PY_NOCTURNE_SIGINT_TOKEN) {
+            notifications[kept++] = notifications[i];
         }
     }
     return kept;
 }
 
-/* 網の呼出しの待ちは、cancel に渡した channel の端の相手が閉じると KABI_ERR_CANCELLED で終わる（nocturne.h の網）。
+/* 網の呼び出しの待ちは、cancel に渡したチャネルの端の相手が閉じると cancelled で終わる（nocturne.core の net）。
    主のスレッドの端は net_end で、SIGINT の配りが相手の net_peer を閉じる。閉じた相手は閉じたままなので、その後の
-   呼出しは新しい組を作る。 */
+   呼び出しは新しい組を作る。 */
 int
-_PyOS_NocturneNetCancel(int *cancel)
+_PyOS_NocturneNetCancel(n_handle *cancel)
 {
-    *cancel = -1;
+    cancel->handle = -1;
     if (!_PyOS_NocturneInterruptible()) {
         return 0;
     }
     if (__atomic_load_n(&nocturne_sigint.net_peer, __ATOMIC_ACQUIRE) < 0) {
-        n_handle ends[2];
-        n_result r = n_channel_pair(ends);
+        n_channel end, peer;
+        n_result r = n_channel_pair(&peer, &end);
         if (r < 0) {
             errno = (int)-r;
             return -1;
         }
         if (nocturne_sigint.net_end >= 0) {
-            n_handle_close(nocturne_sigint.net_end);
+            n_handle_close((n_handle){nocturne_sigint.net_end});
         }
-        nocturne_sigint.net_end = ends[0];
-        __atomic_store_n(&nocturne_sigint.net_peer, ends[1], __ATOMIC_RELEASE);
+        nocturne_sigint.net_end = end.handle;
+        __atomic_store_n(&nocturne_sigint.net_peer, peer.handle, __ATOMIC_RELEASE);
     }
     /* 組を置く前の配りは、閉じる相手が無くても SIGINT を立ててある */
     if (_Py_atomic_load_int(&Handlers[SIGINT].tripped)) {
         errno = EINTR;
         return -1;
     }
-    *cancel = nocturne_sigint.net_end;
+    cancel->handle = nocturne_sigint.net_end;
     return 0;
 }
 
@@ -2362,9 +2362,9 @@ _PyOS_NocturneInterruptsPause(void)
     }
     __atomic_add_fetch(&nocturne_sigint.pausers, 1, __ATOMIC_ACQ_REL);
     __atomic_add_fetch(&nocturne_sigint.generation, 1, __ATOMIC_ACQ_REL);
-    wake_address(&nocturne_sigint.generation, 0);
+    n_wake_address((size_t)&nocturne_sigint.generation, 0);
     while (!__atomic_load_n(&nocturne_sigint.parked, __ATOMIC_ACQUIRE)) {
-        wait_on_address(&nocturne_sigint.parked, 0, KABI_CLOCK_NEVER);
+        n_wait_on_address((size_t)&nocturne_sigint.parked, 0, N_CLOCK_NEVER);
     }
 }
 
@@ -2376,7 +2376,7 @@ _PyOS_NocturneInterruptsResume(void)
     }
     if (__atomic_sub_fetch(&nocturne_sigint.pausers, 1, __ATOMIC_ACQ_REL) == 0) {
         __atomic_add_fetch(&nocturne_sigint.generation, 1, __ATOMIC_RELEASE);
-        wake_address(&nocturne_sigint.generation, 0);
+        n_wake_address((size_t)&nocturne_sigint.generation, 0);
     }
 }
 #endif  /* __nocturne__ */

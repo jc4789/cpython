@@ -1,15 +1,12 @@
 /* Nocturne の python に組み込むモジュール（ports/cpython/README.md）。
 
-   標準ライブラリーの C のモジュールは全部ここにあり、ports/cpython/build.py が
-   ソースを組む（ほかの拡張モジュールは .NLIB のライブラリーとして読み込む：
-   Python/dynload_nocturne.c）。_nocturne is the os module's own (Nocturne/nocturnemodule.c),
-   as nt is on Windows and posix elsewhere; zlib is over the system's DEFLATE
-   codec (Nocturne/zlibmodule.c), _socket over its TCP and UDP
-   (Nocturne/socketmodule.c), select over its event queues
-   (Nocturne/selectmodule.c), _multiprocessing over its apps, channels,
-   shared pages and address waits (Nocturne/multiprocessingmodule.c), _bz2
-   over the libbzip2 of Nocturne's tree (third_party/bzip2, with
-   Nocturne/bz2error.c). */
+   標準ライブラリーの C のモジュールは全部ここにあり、ports/cpython/build.py がソースを組む（ほかの拡張モジュールは
+   .NLIB のライブラリーとして読み込む：Python/dynload_nocturne.c）。_nocturne は os の下のモジュール
+   （Nocturne/nocturnemodule.c。Windows の nt、ほかの系の posix にあたる）。zlib は系の DEFLATE の上
+   （Nocturne/zlibmodule.c）、_socket は系の TCP と UDP の上（Nocturne/socketmodule.c）、select は系のイベントキューの上
+   （Nocturne/selectmodule.c）、_multiprocessing は系のアプリ、チャネル、共有のページ、番地の待ちの上
+   （Nocturne/multiprocessingmodule.c）、_bz2 は Nocturne の木の libbzip2 の上（third_party/bzip2 と
+   Nocturne/bz2error.c）。 */
 #include "Python.h"
 
 extern PyObject* PyInit__abc(void);

@@ -19,8 +19,7 @@ extsep = '.'
 sep = '\\'
 pathsep = ';'
 altsep = '/'
-# The system's programs (KABI_FOLDER_SYSTEM); shutil.which also looks in the
-# folders of the apps, as the shell does.
+# システムのプログラムのフォルダー。shutil.which は、シェルと同じくアプリのフォルダーも探す。
 defpath = 'C:\\Nocturne\\System'
 
 import os

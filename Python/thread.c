@@ -25,7 +25,7 @@
    // to nanoseconds.
 #  define PY_TIMEOUT_MAX_VALUE (LLONG_MAX / 1000)
 #elif defined(__nocturne__)
-   // The wait for a lock takes a deadline in nanoseconds (wait_on_address).
+   // 錠の待ちは ns の締め切りを取る（n_wait_on_address）。
 #  define PY_TIMEOUT_MAX_VALUE (LLONG_MAX / 1000)
 #elif defined (NT_THREADS)
    // WaitForSingleObject() accepts timeout in milliseconds in the range

@@ -12,7 +12,7 @@
 #  include <winsock2.h>           // struct timeval
 #endif
 #ifdef __nocturne__
-#  include "nocturne.h"           // n_clock_wall(), n_clock_monotonic()
+#  include <nocturne/core.h>           // n_clock_wall(), n_clock_monotonic()
 #endif
 
 #if defined(__APPLE__)

@@ -1,11 +1,11 @@
-/* Nocturne のスレッド（docs/nocturne-native-abi.md §5）：nocturne.h の thread_create_sized・thread_join・
-   thread_detach と、ISO C の tss（threads.h）。錠は PyMutex（Python/lock.c）、眠りは Python/parking_lot.c の
-   _PySemaphore で、どちらも番地の待ち（wait_on_address）に乗る。 */
+/* Nocturne のスレッド（docs/nocturne-native-abi.md §5）：中核の契約の n_thread_create・n_thread_join・
+   n_thread_detach と、ISO C の tss（threads.h）。錠は PyMutex（Python/lock.c）、眠りは Python/parking_lot.c の
+   _PySemaphore で、どちらも番地の待ち（n_wait_on_address）に乗る。 */
 
 #include "pycore_interp.h"        // _PyInterpreterState.threads.stacksize
 #include "pycore_time.h"          // _PyTime_AsMicroseconds()
 
-#include "nocturne.h"
+#include <nocturne/core/thread.h>
 #include <threads.h>
 
 /* 新しいスレッドの stack の既定：主スレッドの stack と同じ大きさ（PyThread__init_thread がカーネルに聞く）。
@@ -15,8 +15,8 @@ static size_t nocturne_default_stack;
 static void
 PyThread__init_thread(void)
 {
-    uintptr_t low = 0, high = 0;
-    if (thread_stack_bounds(&low, &high) == 0 && high > low) {
+    size_t low = 0, high = 0;
+    if (n_thread_stack_bounds(&low, &high) == 0 && high > low) {
         nocturne_default_stack = (size_t)(high - low);
     }
 }
@@ -30,7 +30,7 @@ PyThread_start_joinable_thread(void (*func)(void *), void *arg,
     }
     PyThreadState *tstate = _PyThreadState_GET();
     size_t stacksize = tstate ? tstate->interp->threads.stacksize : 0;
-    n_result tid = thread_create_sized(func, arg, stacksize ? stacksize : nocturne_default_stack);
+    n_result tid = n_thread_create(func, arg, stacksize ? stacksize : nocturne_default_stack);
     if (tid < 0) {
         return -1;
     }
@@ -56,13 +56,13 @@ PyThread_start_new_thread(void (*func)(void *), void *arg)
 int
 PyThread_join_thread(PyThread_handle_t handle)
 {
-    return thread_join((int)handle) < 0;
+    return n_thread_join((uint32_t)handle) < 0;
 }
 
 int
 PyThread_detach_thread(PyThread_handle_t handle)
 {
-    return thread_detach((int)handle) < 0;
+    return n_thread_detach((uint32_t)handle) < 0;
 }
 
 /* スレッドの識別子はカーネルのもので、システムの中で一つ。 */
@@ -72,7 +72,7 @@ PyThread_get_thread_ident_ex(void)
     if (!initialized) {
         PyThread_init_thread();
     }
-    return (PyThread_ident_t)thread_id();
+    return (PyThread_ident_t)n_thread_id();
 }
 
 unsigned long
@@ -87,7 +87,7 @@ PyThread_get_thread_native_id(void)
     if (!initialized) {
         PyThread_init_thread();
     }
-    return (unsigned long)thread_id();
+    return (unsigned long)n_thread_id();
 }
 
 void _Py_NO_RETURN
@@ -96,14 +96,14 @@ PyThread_exit_thread(void)
     if (!initialized) {
         exit(0);
     }
-    thread_exit();
+    n_thread_exit();
 }
 
 void _Py_NO_RETURN
 PyThread_hang_thread(void)
 {
     for (;;) {
-        n_sleep_until(KABI_CLOCK_NEVER);
+        n_sleep_until(N_CLOCK_NEVER);
     }
 }
 

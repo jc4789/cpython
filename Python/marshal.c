@@ -19,7 +19,7 @@
 
 #include "marshal.h"                 // Py_MARSHAL_VERSION
 #ifdef __nocturne__
-#  include "nocturne.h"              // n_document_size()
+#  include <nocturne/core.h>        // n_document_size()
 #endif
 
 #ifdef __APPLE__
@@ -1876,9 +1876,13 @@ static Py_off_t
 getfilesize(FILE *fp)
 {
 #ifdef __nocturne__
-    /* a stream on Nocturne reads a handle, not a Python descriptor */
-    n_result size = n_document_size(n_stream_handle(fp));
-    return size < 0 ? -1 : (Py_off_t)size;
+    /* Nocturne の流れは Python の記述子でなくハンドルを読む */
+    int handle = n_stream_handle(fp);
+    uint64_t size = 0;
+    if (handle < 0 || n_document_size((n_document){handle}, &size) < 0) {
+        return -1;
+    }
+    return (Py_off_t)size;
 #else
     struct _Py_stat_struct st;
     if (_Py_fstat_noraise(fileno(fp), &st) != 0)

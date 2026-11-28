@@ -31,7 +31,7 @@ PyAPI_FUNC(void) _Py_RestoreSignals(void);
 #elif defined(SIGMAX)
 #  define Py_NSIG (SIGMAX + 1)     // djgpp
 #elif defined(__nocturne__)
-#  define Py_NSIG (SIGTERM + 1)    // ISO C's signals, 1 to SIGTERM
+#  define Py_NSIG (SIGTERM + 1)    // ISO C の信号、1 から SIGTERM まで
 #else
 #  define Py_NSIG 64               // Use a reasonable default value
 #endif
@@ -105,45 +105,38 @@ PyAPI_FUNC(void*) _PyOS_SigintEvent(void);
 #endif
 
 #ifdef __nocturne__
-// Nocturne's Ctrl+C (Modules/signalmodule.c): the terminal sends a message
-// for each one on the n_interrupts channel, and a thread of the interpreter
-// delivers it as SIGINT. A wait of the main thread stops for it, as a wait
-// on Windows's _PyOS_SigintEvent() does.
+#include <nocturne/core/events.h>
 
-// Whether the calling thread's waits stop for SIGINT: the main thread, while
-// a terminal sends Ctrl+C.
+// Nocturne の Ctrl+C（Modules/signalmodule.c）：端末は Ctrl+C ごとに n_interrupts のチャネルへメッセージを送り、
+// インタープリターのスレッドの一つがそれを SIGINT として届ける。主のスレッドの待ちは、Windows の
+// _PyOS_SigintEvent() の待ちと同じく、それで止まる。
+
+// 呼んだスレッドの待ちが SIGINT で止まるか：端末が Ctrl+C を送る間の主のスレッド。
 extern int _PyOS_NocturneInterruptible(void);
 
-// On an interruptible thread: wait until handle h (-1: none) reports one of
-// interest (KABI_EVENT_*), the word at address (NULL: none) holds another value
-// than expected, the monotonic clock reaches deadline (KABI_CLOCK_NEVER: never),
-// or SIGINT is delivered. 1: the handle or the word, 0: the deadline,
-// -1: SIGINT. Another thread waits for the handle or the word in the same
-// way, without SIGINT.
-extern int _PyOS_NocturneWait(int h, unsigned int interest,
-                              volatile unsigned int *address,
-                              unsigned int expected,
-                              unsigned long long deadline);
+// 止まれるスレッドで、ハンドル h（-1 は無し）が interest（N_EVENT_*）のどれかを知らせるか、番地 address（NULL は無し）
+// の語が expected でなくなるか、単調時計が deadline（N_CLOCK_NEVER は来ない）に着くか、SIGINT が届くまで待つ。
+// 1：ハンドルか語、0：締め切り、-1：SIGINT。ほかのスレッドは SIGINT なしに同じくハンドルか語を待つ。
+extern int _PyOS_NocturneWait(int32_t h, uint32_t interest,
+                              volatile uint32_t *address,
+                              uint32_t expected,
+                              uint64_t deadline);
 
-// On an interruptible thread: n_events_wait on the caller's queue, or until
-// SIGINT is delivered: the count of the queue's own events, or -1 for SIGINT.
-// The wait uses the token _PY_NOCTURNE_SIGINT_TOKEN of the queue. Another
-// thread just waits.
+// 止まれるスレッドで、呼び手のキューを n_events_wait で、SIGINT が届くまで待つ：キュー自身の通知の数（締め切りは 0）、
+// SIGINT は -N_ERR_CANCELLED、ほかの失敗はその結果コード。待ちはキューの token _PY_NOCTURNE_SIGINT_TOKEN を使う。ほかの
+// スレッドはただ待つ。
 #define _PY_NOCTURNE_SIGINT_TOKEN (~0ULL)
-struct kabi_event;
-extern long _PyOS_NocturneWaitEvents(int queue, struct kabi_event *events,
-                                     unsigned long max,
-                                     unsigned long long deadline);
+extern n_result _PyOS_NocturneWaitEvents(n_events queue,
+                                         struct n_notification *notifications,
+                                         size_t capacity, uint64_t deadline);
 
-// 網の呼出し（net_resolve など）の cancel に渡す channel の端を *cancel に書く。
-// 待ちが SIGINT で止まるスレッドでは、SIGINT がその相手を閉じ、待ちは
-// KABI_ERR_CANCELLED で終わる。ほかのスレッドは -1（取り消し無し）。0 か、errno
-// つきの -1（SIGINT がもう来ていれば EINTR）。
-extern int _PyOS_NocturneNetCancel(int *cancel);
+// 網の呼び出し（n_net_resolve など）の cancel に渡すチャネルの端を *cancel に書く。待ちが SIGINT で止まるスレッドでは、
+// SIGINT がその相手を閉じ、待ちは -N_ERR_CANCELLED で終わる。ほかのスレッドは handle -1（取り消し無し）。0 か、
+// errno つきの -1（SIGINT がもう来ていれば EINTR）。
+extern int _PyOS_NocturneNetCancel(n_handle *cancel);
 
-// While the libc's n_line_read reads a terminal line it takes Ctrl+C itself:
-// the interpreter's thread keeps off the channel between Pause and Resume.
-// Pause returns once that thread has delivered what it took before.
+// 中核のライブラリーの n_line_read は端末の行を読む間 Ctrl+C を自分で受ける：Pause と Resume の間、インタープリターの
+// スレッドはチャネルから離れる。Pause は、そのスレッドが前に受けたものを届けてから戻る。
 extern void _PyOS_NocturneInterruptsPause(void);
 extern void _PyOS_NocturneInterruptsResume(void);
 #endif

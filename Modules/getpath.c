@@ -21,7 +21,7 @@
 #endif
 
 #ifdef __nocturne__
-#  include "nocturne.h"           // n_program_path()
+#  include <nocturne/core.h>           // n_program_path()
 #endif
 
 #ifdef HAVE_DLFCN_H
@@ -284,8 +284,7 @@ getpath_isxfile_impl(PyObject *module, PyObject *pathobj)
         return -1;
     }
 #ifdef __nocturne__
-    /* Nocturne has no modes: launching a document tells whether it is a
-       program. */
+    /* Nocturne に mode は無い：プログラムかどうかは、文書を起動すると分かる。 */
     return (res == 0) && S_ISREG(st.st_mode);
 #else
     return (res == 0) && S_ISREG(st.st_mode) && (st.st_mode & 0111);
@@ -829,8 +828,14 @@ progname_to_dict(PyObject *dict, const char *key)
 #ifdef MS_WINDOWS
     return winmodule_to_dict(dict, key, NULL);
 #elif defined(__nocturne__)
-    /* the complete path of the program the system launched */
-    return decode_to_dict(dict, key, n_program_path());
+    /* 系が起動したプログラムの完全なパス */
+    char path[4096];
+    n_result length = n_program_path(path, sizeof(path) - 1);
+    if (length < 0 || (size_t)length > sizeof(path) - 1) {
+        return 0;
+    }
+    path[length] = '\0';
+    return decode_to_dict(dict, key, path);
 #elif defined(__APPLE__)
     char *path;
     uint32_t pathLen = 256;

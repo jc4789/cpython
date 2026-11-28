@@ -12,8 +12,7 @@
 #include "pycore_importdl.h"
 
 #include <nos.h>
-#include <nocturne.h>
-#include <nocturne_language.h>
+#include <nocturne/core.h>
 
 /* python.NOS が提供する C の API（見え方が default の定義の全部。エクスポートの一覧は ports/cpython/build.py が作る）。 */
 NOS_PROVIDE(_Py_NOCTURNE_API_PROVIDER, PY_MINOR_VERSION, 0, 0);
@@ -37,16 +36,26 @@ message(const char *format, ...)
     return PyUnicode_DecodeUTF8(text, (Py_ssize_t)strlen(text), "surrogateescape");
 }
 
+/* 結果コードの文（out text は NUL を書かないので、ここで終える）。 */
+static const char *
+result_text(n_result r, char *text, size_t capacity)
+{
+    n_result n = n_result_text(r, text, capacity - 1);
+    text[n < 0 ? 0 : (size_t)n < capacity - 1 ? (size_t)n : capacity - 1] = '\0';
+    return text;
+}
+
 /* 読み込みの失敗の文：結び付けの失敗なら中核のライブラリーの文（n_locale_link_failure）、ほかは結果の文。 */
 static PyObject *
 link_failure_text(const char *pathname, n_result r)
 {
-    struct kabi_link_failure f;
-    if (n_image_failure(&f) < 0) {
-        return message("%s を読み込めない：%s", pathname, n_result_text(r));
-    }
     char why[640];
-    n_locale_link_failure(why, sizeof(why), &f);
+    struct n_link_failure f = {.bytes = sizeof f};
+    if (n_image_failure(&f) < 0) {
+        return message("%s を読み込めない：%s", pathname, result_text(r, why, sizeof why));
+    }
+    n_result n = n_locale_link_failure(&f, why, sizeof why - 1);
+    why[n < 0 ? 0 : (size_t)n < sizeof why - 1 ? (size_t)n : sizeof why - 1] = '\0';
     return message("%s を読み込めない：%s", pathname, why);
 }
 
@@ -71,22 +80,24 @@ dl_funcptr
 _PyImport_FindSharedFuncptr(const char *prefix, const char *shortname, const char *pathname, FILE *fp)
 {
     (void)fp;
-    n_handle document = n_document_open(pathname, KABI_DOCUMENT_READ);
-    if (document < 0) {
-        set_import_error(message("%s を開けない：%s", pathname, n_result_text(document)), shortname,
-                         pathname);
+    n_document document;
+    n_result r = n_document_open(pathname, strlen(pathname), N_DOCUMENT_ACCESS_READ, &document);
+    if (r < 0) {
+        char why[256];
+        set_import_error(message("%s を開けない：%s", pathname, result_text(r, why, sizeof why)),
+                         shortname, pathname);
         return NULL;
     }
-    const struct kabi_image *image;
-    n_result r;
+    static const char provider[] = _Py_NOCTURNE_EXTENSION_PROVIDER;
+    struct n_image image = {.bytes = sizeof image};
     Py_BEGIN_ALLOW_THREADS
-    /* 同じ文書をもう一度読み込めば（PyModExport の次に PyInit を引く時）、同じイメージが返る */
-    r = n_image_load(document, -1, _Py_NOCTURNE_EXTENSION_PROVIDER, _Py_NOCTURNE_EXTENSION_MAJOR,
+    /* 同じ文書をもう一度読み込めば（PyModExport の次に PyInit を引く時）、同じイメージが返る。表 -1 はプロセスの表 */
+    r = n_image_load(document, (n_handle){-1}, provider, sizeof provider - 1, _Py_NOCTURNE_EXTENSION_MAJOR,
                      _Py_NOCTURNE_EXTENSION_MINOR, &image);
     Py_END_ALLOW_THREADS
-    n_handle_close(document);
+    n_handle_close((n_handle){document.handle});
     if (r < 0) {
-        if (r == -KABI_ERR_WRONG_GENERATION) {
+        if (r == -N_ERR_WRONG_GENERATION) {
             set_import_error(message("%s は拡張モジュールの契約 %s %d.%d を提供しない", pathname,
                                                   _Py_NOCTURNE_EXTENSION_PROVIDER, _Py_NOCTURNE_EXTENSION_MAJOR,
                                                   _Py_NOCTURNE_EXTENSION_MINOR),
@@ -99,5 +110,6 @@ _PyImport_FindSharedFuncptr(const char *prefix, const char *shortname, const cha
     }
     char funcname[258];
     PyOS_snprintf(funcname, sizeof(funcname), "%.20s_%.200s", prefix, shortname);
-    return (dl_funcptr)n_image_symbol(image, _Py_NOCTURNE_EXTENSION_PROVIDER, funcname);
+    n_result address = n_image_symbol(image.base, provider, sizeof provider - 1, funcname, strlen(funcname));
+    return address < 0 ? NULL : (dl_funcptr)(size_t)address;
 }

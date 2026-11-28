@@ -540,8 +540,8 @@ _PyMem_DefaultRawWcsdup(const wchar_t *str)
 #  ifdef MS_WINDOWS
 #    include <windows.h>
 #  elif defined(__nocturne__)
-     // Arenas are pages of native memory (n_memory_reserve).
-#    include "nocturne.h"
+     // アリーナはネイティブの記憶の頁（n_memory_reserve）。
+#    include <nocturne/core.h>
 #  elif defined(HAVE_MMAP)
 #    include <sys/mman.h>
 #    ifdef MAP_ANONYMOUS
@@ -649,11 +649,12 @@ _PyMem_ArenaAlloc(void *Py_UNUSED(ctx), size_t size)
     return VirtualAlloc(NULL, size,
                         MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 #elif defined(__nocturne__) && defined(WITH_PYMALLOC)
-    void *ptr;
-    if (n_memory_reserve(size, 0, KABI_MEMORY_READ_WRITE, 0, &ptr) < 0) {
+    // read_write の予約は全体を commit する
+    n_result address = n_memory_reserve(size, 0, N_MEMORY_ACCESS_READ_WRITE, 0);
+    if (address < 0) {
         return NULL;
     }
-    return ptr;
+    return (void *)(size_t)address;
 #elif defined(ARENAS_USE_MMAP)
     void *ptr;
 #  ifdef PYMALLOC_USE_HUGEPAGES
@@ -713,7 +714,7 @@ _PyMem_ArenaFree(void *Py_UNUSED(ctx), void *ptr,
     if (ptr == NULL) {
         return;
     }
-    if (n_memory_release(ptr, size) < 0) {
+    if (n_memory_release((size_t)ptr, size) < 0) {
         _Py_FatalErrorFormat(__func__, "n_memory_release(%p, %zu) failed", ptr, size);
     }
 #elif defined(ARENAS_USE_MMAP)

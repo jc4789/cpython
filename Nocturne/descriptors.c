@@ -1,25 +1,19 @@
-/* Python's file descriptors on Nocturne (Nocturne/descriptors.h).
+/* Nocturne の上の Python のファイル記述子（Nocturne/descriptors.h）。
 
-   A descriptor names an open file, which holds the handle, the position in a
-   document and the rest of a channel message a read did not take. os.dup gives
-   a second descriptor for the same open file, which closes its handle when the
-   last of them closes. Descriptors 0, 1 and 2 (stdin, stdout, stderr) are the
-   app's input, output and log streams, the handles its launcher named
-   (n_input, n_output, n_log); an output document there is appended to, as
-   libc's streams do, so apps sharing a shell's "> name" write after each other.
+   記述子は開いたファイルを名指し、開いたファイルはハンドル、文書の中の位置、読みが取らなかったチャネルの
+   メッセージの残りを持つ。os.dup は同じ開いたファイルの二つ目の記述子を作り、最後の記述子が閉じるとハンドルを
+   閉じる。記述子 0、1、2（stdin、stdout、stderr）はアプリの入力、出力、記録の流れで、起動元が名指したハンドル
+   （n_input、n_output、n_log）。そこにある出力の文書は、中核のライブラリーの流れと同じく後ろへ足すので、シェルの
+   "> 名前" を分け合うアプリは互いの後ろに書く。
 
-   A descriptor that reaches the terminal reads lines that libc's n_line_read
-   edits, as the line discipline of a terminal does elsewhere. A read of a
-   channel on the main thread waits through _PyOS_NocturneWait, so that Ctrl+C
-   ends it with EINTR and Python runs its SIGINT handler.
+   端末へつながる記述子は、中核のライブラリーの n_line_read が編集した行を読む。主のスレッドのチャネルの読みは
+   _PyOS_NocturneWait で待つので、Ctrl+C が EINTR で終わらせ、Python が SIGINT の handler を走らせる。
 
-   A socket's descriptor (Nocturne/socketmodule.c) exists from socket() on,
-   as Python expects, while its TCP or UDP handle comes once it connects,
-   listens or binds: until then the open file has its kind and no handle.
-   os.read and os.write reach a socket's stream as they reach a channel.
+   socket の記述子（Nocturne/socketmodule.c）は、Python が求めるとおり socket() からあり、TCP か UDP のハンドルは
+   つなぐか、聞くか、bind した時に来る：それまで開いたファイルは種類だけを持ち、ハンドルを持たない。os.read と
+   os.write は、チャネルと同じく socket の流れにも届く。
 
-   Lock order: the table's lock, then an open file's. Neither is held while
-   another is taken the other way round. */
+   錠の順：表の錠、次に開いたファイルの錠。逆の順で取る間、どちらも持たない。 */
 #include "Python.h"
 #include "pycore_signal.h"        // _PyOS_NocturneWait()
 #include "descriptors.h"
@@ -30,17 +24,17 @@
 #include <string.h>
 
 struct open_file {
-    n_handle handle;              /* -1: a socket with no handle yet */
-    int kind;                     /* KABI_KIND_* */
+    int32_t handle;               /* 契約のハンドルの番号。-1 はまだハンドルの無い socket */
+    int kind;                     /* N_KIND_* */
     bool readable;
     bool writable;
-    bool append;                  /* every write goes to the document's end */
+    bool append;                  /* 書きはどれも文書の終わりへ */
     bool blocking;
-    bool terminal;                /* the input stream at a terminal: reads are lines */
-    uint32_t refs;                /* descriptors naming it, and calls using it */
-    PyMutex lock;                 /* position, pending */
-    uint64_t position;            /* documents */
-    char *pending;                /* channels: bytes received and not yet read */
+    bool terminal;                /* 端末の入力の流れ：読みは行 */
+    uint32_t refs;                /* 名指す記述子と、使っている呼び出し */
+    PyMutex lock;                 /* position、pending */
+    uint64_t position;            /* 文書 */
+    char *pending;                /* チャネル：受けてまだ読んでいないバイト */
     size_t pending_at, pending_end;
 };
 
@@ -48,10 +42,10 @@ static struct {
     PyMutex lock;
     struct open_file **files;
     int count;
-    bool standard;                /* 0, 1 and 2 were looked at */
+    bool standard;                /* 0、1、2 を見た */
 } table;
 
-/* The longest line a read of the terminal takes. */
+/* 端末の読みが取る一番長い行。 */
 #define TERMINAL_LINE (64 * 1024)
 
 static int
@@ -61,26 +55,75 @@ fail(n_result r)
     return -1;
 }
 
+const char *
+_Py_result_text(n_result r, char *buf, size_t size)
+{
+    n_result n = n_result_text(r, buf, size - 1);
+    buf[n < 0 ? 0 : (size_t)n < size - 1 ? (size_t)n : size - 1] = '\0';
+    return buf;
+}
+
 int
 _Py_complete_path(const char *name, char out[_PY_PATH_MAX])
 {
-    n_result r = n_path_complete(name, out, _PY_PATH_MAX);
-    if (r == -KABI_ERR_TOO_LARGE) {
+    /* NUL の場所を残す。全部の長さが容量を越えれば、パスは長すぎる */
+    n_result r = n_path_complete(name, strlen(name), out, _PY_PATH_MAX - 1);
+    if (r < 0) {
+        return fail(r);
+    }
+    if (r > _PY_PATH_MAX - 1) {
         errno = ENAMETOOLONG;
         return -1;
     }
-    return r < 0 ? fail(r) : 0;
+    out[r] = '\0';
+    return (int)r;
 }
 
-/* Nocturne has no modes: an entry reads as readable and writable, and the
-   system checks the user it belongs to when it is opened. C: keeps one time,
-   the modified time. */
+n_result
+_Py_entry_info(const char *path, struct n_entry *entry)
+{
+    memset(entry, 0, sizeof *entry);
+    entry->bytes = sizeof *entry;
+    return n_entry_info(path, strlen(path), entry);
+}
+
+n_result
+_Py_folder_list(const char *folder, struct n_entry **entries)
+{
+    size_t length = strlen(folder);
+    *entries = NULL;
+    /* 数を聞いてから読む。その間に項が増えれば読み直す */
+    n_result count = n_folder_list(folder, length, NULL, 0, sizeof(struct n_entry), 0);
+    for (;;) {
+        if (count < 0) {
+            return count;
+        }
+        size_t capacity = (size_t)count + 1;
+        struct n_entry *list = PyMem_RawCalloc(capacity, sizeof *list);
+        if (list == NULL) {
+            return -N_ERR_NO_MEMORY;
+        }
+        for (size_t i = 0; i < capacity; i++) {
+            list[i].bytes = sizeof list[i];
+        }
+        n_result total = n_folder_list(folder, length, list, capacity, sizeof *list, 0);
+        if (total >= 0 && (size_t)total <= capacity) {
+            *entries = list;
+            return total;
+        }
+        PyMem_RawFree(list);
+        count = total;
+    }
+}
+
+/* Nocturne に mode は無い：項は読めて書けると言い、開く時に系がその所有者の利用者を確かめる。C: が持つ時刻は
+   変えた時刻の一つ。 */
 void
-_Py_entry_stat(const struct kabi_entry *entry, struct _Py_stat_struct *status)
+_Py_entry_stat(const struct n_entry *entry, struct _Py_stat_struct *status)
 {
     memset(status, 0, sizeof *status);
     status->st_ino = entry->id;
-    status->st_mode = entry->kind == KABI_KIND_FOLDER ? S_IFDIR | 0777 : S_IFREG | 0666;
+    status->st_mode = entry->kind == N_KIND_FOLDER ? S_IFDIR | 0777 : S_IFREG | 0666;
     status->st_nlink = 1;
     status->st_uid = entry->owner;
     status->st_size = (int64_t)entry->size;
@@ -97,8 +140,8 @@ _Py_path_stat(const char *name, struct _Py_stat_struct *status)
     if (_Py_complete_path(name, path) < 0) {
         return -1;
     }
-    struct kabi_entry entry;
-    n_result r = n_entry_info(path, &entry);
+    struct n_entry entry;
+    n_result r = _Py_entry_info(path, &entry);
     if (r < 0) {
         return fail(r);
     }
@@ -106,10 +149,10 @@ _Py_path_stat(const char *name, struct _Py_stat_struct *status)
     return 0;
 }
 
-/* ---- the table ---- */
+/* ---- 表 ---- */
 
 static struct open_file *
-open_file_make(n_handle handle, int kind)
+open_file_make(int32_t handle, int kind)
 {
     struct open_file *f = PyMem_RawCalloc(1, sizeof *f);
     if (f == NULL) {
@@ -130,13 +173,13 @@ open_file_put(struct open_file *f)
         return;
     }
     if (f->handle >= 0) {
-        n_handle_close(f->handle);
+        n_handle_close((n_handle){f->handle});
     }
     PyMem_RawFree(f->pending);
     PyMem_RawFree(f);
 }
 
-/* The table holds at least count slots. Called with its lock. */
+/* 表は少なくとも count の項を持つ。表の錠を持って呼ぶ。 */
 static int
 table_reserve(int count)
 {
@@ -158,9 +201,8 @@ table_reserve(int count)
     return 0;
 }
 
-/* Descriptors 0, 1 and 2: the app's input, output and log streams, made the
-   first time the table is used. A stream the launcher did not give has no
-   descriptor. Called with its lock. */
+/* 記述子 0、1、2：アプリの入力、出力、記録の流れで、表を初めて使う時に作る。起動元が渡さなかった流れは記述子を
+   持たない。表の錠を持って呼ぶ。 */
 static void
 table_standard(void)
 {
@@ -171,25 +213,28 @@ table_standard(void)
     if (table_reserve(3) < 0) {
         return;
     }
-    const n_handle streams[3] = {n_input(), n_output(), n_log()};
+    n_result (*const streams[3])(n_handle *) = {n_input, n_output, n_log};
     for (int fd = 0; fd < 3; fd++) {
-        n_handle h = streams[fd];
-        n_result kind = h >= 0 ? n_handle_kind(h) : h;
+        n_handle h;
+        if (streams[fd](&h) < 0) {
+            continue;
+        }
+        n_result kind = n_handle_kind(h);
         if (kind < 0) {
             continue;
         }
-        struct open_file *f = open_file_make(h, (int)kind);
+        struct open_file *f = open_file_make(h.handle, (int)kind);
         if (f == NULL) {
             continue;
         }
         f->readable = f->writable = true;
-        f->append = kind == KABI_KIND_DOCUMENT && fd != 0;
+        f->append = kind == N_KIND_DOCUMENT && fd != 0;
         f->terminal = fd == 0 && n_terminal(h);
         table.files[fd] = f;
     }
 }
 
-/* The open file fd names, held until open_file_put. */
+/* fd が名指す開いたファイル。open_file_put まで持つ。 */
 static struct open_file *
 fd_get(int fd)
 {
@@ -209,7 +254,7 @@ fd_get(int fd)
     return f;
 }
 
-/* The lowest free descriptor names f, which gives the table its reference. */
+/* 一番小さい空いた記述子が f を名指す。f は表に参照を与える。 */
 static int
 fd_install(struct open_file *f)
 {
@@ -229,9 +274,9 @@ fd_install(struct open_file *f)
 }
 
 int
-_Py_fd_adopt(n_handle handle, int readable, int writable)
+_Py_fd_adopt(int32_t handle, int readable, int writable)
 {
-    n_result kind = n_handle_kind(handle);
+    n_result kind = n_handle_kind((n_handle){handle});
     if (kind < 0) {
         return fail(kind);
     }
@@ -249,29 +294,30 @@ _Py_fd_adopt(n_handle handle, int readable, int writable)
     return fd;
 }
 
-/* A document by Python's flags (os.O_*). */
-static n_handle
-open_document(const char *path, int flags)
+/* Python の旗（os.O_*）で文書を開く。 */
+static n_result
+open_document(const char *path, int flags, n_document *document)
 {
-    int access = (flags & O_ACCMODE) == O_RDONLY ? KABI_DOCUMENT_READ : KABI_DOCUMENT_EDIT;
+    size_t length = strlen(path);
+    enum n_document_access access =
+        (flags & O_ACCMODE) == O_RDONLY ? N_DOCUMENT_ACCESS_READ : N_DOCUMENT_ACCESS_EDIT;
     if ((flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL)) {
-        return n_document_open(path, KABI_DOCUMENT_CREATE);
+        return n_document_open(path, length, N_DOCUMENT_ACCESS_CREATE, document);
     }
-    n_handle h = n_document_open(path, access);
-    if (h == -KABI_ERR_NOT_FOUND && (flags & O_CREAT)) {
-        h = n_document_open(path, KABI_DOCUMENT_CREATE);
-        if (h == -KABI_ERR_EXISTS) {
-            h = n_document_open(path, access);  /* made meanwhile */
+    n_result r = n_document_open(path, length, access, document);
+    if (r == -N_ERR_NOT_FOUND && (flags & O_CREAT)) {
+        r = n_document_open(path, length, N_DOCUMENT_ACCESS_CREATE, document);
+        if (r == -N_ERR_EXISTS) {
+            r = n_document_open(path, length, access, document);  /* その間に作られた */
         }
     }
-    if (h >= 0 && (flags & O_TRUNC)) {
-        n_result r = n_document_set_size(h, 0);
+    if (r >= 0 && (flags & O_TRUNC)) {
+        r = n_document_set_size(*document, 0);
         if (r < 0) {
-            n_handle_close(h);
-            return (n_handle)r;
+            n_handle_close((n_handle){document->handle});
         }
     }
-    return h;
+    return r;
 }
 
 int
@@ -281,13 +327,14 @@ _Py_fd_open(const char *name, int flags)
     if (_Py_complete_path(name, path) < 0) {
         return -1;
     }
-    n_handle h = open_document(path, flags);
-    if (h < 0) {
-        return fail(h);
+    n_document document;
+    n_result r = open_document(path, flags, &document);
+    if (r < 0) {
+        return fail(r);
     }
-    struct open_file *f = open_file_make(h, KABI_KIND_DOCUMENT);
+    struct open_file *f = open_file_make(document.handle, N_KIND_DOCUMENT);
     if (f == NULL) {
-        n_handle_close(h);
+        n_handle_close((n_handle){document.handle});
         return -1;
     }
     f->readable = (flags & O_ACCMODE) != O_WRONLY;
@@ -300,14 +347,14 @@ _Py_fd_open(const char *name, int flags)
     return fd;
 }
 
-n_handle
+int32_t
 _Py_fd_handle(int fd)
 {
     struct open_file *f = fd_get(fd);
     if (f == NULL) {
         return -1;
     }
-    n_handle h = __atomic_load_n(&f->handle, __ATOMIC_ACQUIRE);
+    int32_t h = __atomic_load_n(&f->handle, __ATOMIC_ACQUIRE);
     open_file_put(f);
     if (h < 0) {
         errno = ENOTCONN;
@@ -343,13 +390,13 @@ _Py_fd_socket(int kind)
 }
 
 int
-_Py_fd_attach(int fd, n_handle handle)
+_Py_fd_attach(int fd, int32_t handle)
 {
     struct open_file *f = fd_get(fd);
     if (f == NULL) {
         return -1;
     }
-    n_handle none = -1;
+    int32_t none = -1;
     bool attached = __atomic_compare_exchange_n(&f->handle, &none, handle, false,
                                                 __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
     open_file_put(f);
@@ -361,13 +408,13 @@ _Py_fd_attach(int fd, n_handle handle)
 }
 
 int
-_Py_fd_detach(int fd, n_handle handle)
+_Py_fd_detach(int fd, int32_t handle)
 {
     struct open_file *f = fd_get(fd);
     if (f == NULL) {
         return -1;
     }
-    n_handle expected = handle;
+    int32_t expected = handle;
     bool detached = __atomic_compare_exchange_n(&f->handle, &expected, -1, false,
                                                 __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
     open_file_put(f);
@@ -379,7 +426,7 @@ _Py_fd_detach(int fd, n_handle handle)
 }
 
 int
-_Py_fd_poll(int fd, n_handle *handle)
+_Py_fd_poll(int fd, int32_t *handle)
 {
     struct open_file *f = fd_get(fd);
     if (f == NULL) {
@@ -387,18 +434,18 @@ _Py_fd_poll(int fd, n_handle *handle)
     }
     int ready = 0;
     *handle = -1;
-    n_handle h = __atomic_load_n(&f->handle, __ATOMIC_ACQUIRE);
-    if (f->kind == KABI_KIND_DOCUMENT) {
-        ready = KABI_EVENT_RECEIVABLE | KABI_EVENT_SENDABLE;
+    int32_t h = __atomic_load_n(&f->handle, __ATOMIC_ACQUIRE);
+    if (f->kind == N_KIND_DOCUMENT) {
+        ready = N_EVENT_RECEIVABLE | N_EVENT_SENDABLE;
     }
     else if (h < 0) {
-        /* a socket that never connected: its calls answer at once */
-        ready = KABI_EVENT_RECEIVABLE | KABI_EVENT_SENDABLE | KABI_EVENT_CLOSED;
+        /* 一度もつながらなかった socket：その呼び出しはすぐ答える */
+        ready = N_EVENT_RECEIVABLE | N_EVENT_SENDABLE | N_EVENT_CLOSED;
     }
     else {
         PyMutex_Lock(&f->lock);
         if (f->pending != NULL) {
-            ready = KABI_EVENT_RECEIVABLE;
+            ready = N_EVENT_RECEIVABLE;
         }
         PyMutex_Unlock(&f->lock);
         *handle = h;
@@ -485,9 +532,9 @@ _Py_fd_dup2(int fd, int fd2)
     return fd2;
 }
 
-/* ---- reading ---- */
+/* ---- 読み ---- */
 
-/* Bytes received earlier and not yet read. Called with f's lock. */
+/* 前に受けてまだ読んでいないバイト。f の錠を持って呼ぶ。 */
 static size_t
 take_pending(struct open_file *f, char *buf, size_t count)
 {
@@ -502,36 +549,39 @@ take_pending(struct open_file *f, char *buf, size_t count)
     return n;
 }
 
-/* Waits until h has something for a blocking read on the main thread, or
-   until Ctrl+C: 0, or -1 with errno EINTR. */
+/* 主のスレッドの止まる読みのために、h に何かが来るか Ctrl+C まで待つ：0 か、errno EINTR の -1。 */
 static int
-wait_receivable(n_handle h)
+wait_receivable(int32_t h)
 {
-    if (_PyOS_NocturneWait(h, KABI_EVENT_RECEIVABLE | KABI_EVENT_CLOSED, NULL, 0, KABI_CLOCK_NEVER) < 0) {
+    if (_PyOS_NocturneWait(h, N_EVENT_RECEIVABLE | N_EVENT_CLOSED, NULL, 0, N_CLOCK_NEVER) < 0) {
         errno = EINTR;
         return -1;
     }
     return 0;
 }
 
-/* Bytes of a TCP stream, or one UDP datagram (what fits buf), as a read of
-   a channel waits. Not called with f's lock: a thread that sends to the
-   socket does not wait for one that receives from it. */
+/* TCP の流れのバイトか、UDP の datagram 一つ（buf に入る分）を、チャネルの読みと同じく待って読む。f の錠を持たずに
+   呼ぶ：socket へ送るスレッドは、受けるスレッドを待たない。 */
 static Py_ssize_t
 read_socket(struct open_file *f, char *buf, size_t count)
 {
-    n_handle h = __atomic_load_n(&f->handle, __ATOMIC_ACQUIRE);
+    int32_t h = __atomic_load_n(&f->handle, __ATOMIC_ACQUIRE);
     if (h < 0) {
         errno = ENOTCONN;
         return -1;
     }
     for (;;) {
         bool interruptible = f->blocking && _PyOS_NocturneInterruptible();
-        uint64_t deadline = f->blocking && !interruptible ? KABI_CLOCK_NEVER : 0;
-        n_result r = f->kind == KABI_KIND_TCP
-            ? tcp_recv(h, buf, count, deadline)
-            : udp_receive(h, buf, count, NULL, deadline, -1);
-        if ((r == -KABI_ERR_NOT_READY || r == -KABI_ERR_TIMEOUT) && deadline == 0) {
+        uint64_t deadline = f->blocking && !interruptible ? N_CLOCK_NEVER : 0;
+        n_result r;
+        if (f->kind == N_KIND_TCP) {
+            r = n_tcp_receive_until((n_tcp){h}, (uint8_t *)buf, count, deadline, NULL, 0);
+        }
+        else {
+            struct n_udp_received received = {.bytes = sizeof received};
+            r = n_udp_receive_until((n_udp){h}, (uint8_t *)buf, count, &received, deadline, NULL, 0);
+        }
+        if ((r == -N_ERR_NOT_READY || r == -N_ERR_TIMEOUT) && deadline == 0) {
             if (!interruptible) {
                 errno = EAGAIN;
                 return -1;
@@ -541,56 +591,82 @@ read_socket(struct open_file *f, char *buf, size_t count)
             }
             continue;
         }
-        /* 長い datagram は buf に入った分だけ（udp_receive は datagram の長さを返す） */
+        /* 長い datagram は buf に入った分だけ（n_udp_receive_until は datagram の長さを返す） */
         return r < 0 ? fail(r) : (Py_ssize_t)Py_MIN((size_t)r, count);
     }
 }
 
-/* The next message of a channel, the part of it that fits buf and the rest
-   kept as pending. Called with f's lock. */
+/* 受けたメッセージの添え物を閉じる（記述子の読みは添え物を受けない）。 */
+static void
+drop_attached(n_handle attached)
+{
+    if (attached.handle >= 0) {
+        n_handle_close(attached);
+    }
+}
+
+/* チャネルの次のメッセージの buf に入る部分。残りは pending に持つ。f の錠を持って呼ぶ。 */
 static Py_ssize_t
 read_channel(struct open_file *f, char *buf, size_t count)
 {
+    bool console = f->kind == N_KIND_CONSOLE;
     for (;;) {
         bool interruptible = f->blocking && _PyOS_NocturneInterruptible();
-        int flags = f->blocking && !interruptible ? KABI_CHANNEL_WAIT : 0;
-        n_result r = f->kind == KABI_KIND_CONSOLE
-            ? n_console_receive(f->handle, buf, count, flags)
-            : n_channel_receive(f->handle, buf, count, flags, NULL);
-        if (r == 0 && f->kind != KABI_KIND_CONSOLE) {
-            continue;  /* an empty message carries no bytes */
+        n_handle attached = {-1};
+        n_result r = console
+            ? n_console_receive((n_console){f->handle}, (uint8_t *)buf, count)
+            : n_channel_receive((n_channel){f->handle}, (uint8_t *)buf, count, &attached, 0);
+        if (r >= 0) {
+            drop_attached(attached);
         }
-        if (r == -KABI_ERR_CLOSED) {
+        if (r == 0 && !console) {
+            continue;  /* 空のメッセージはバイトを持たない */
+        }
+        if (r == -N_ERR_CLOSED) {
             return 0;
         }
-        if (r == -KABI_ERR_NOT_READY && interruptible) {
-            if (wait_receivable(f->handle) < 0) {
-                return -1;
+        if (r == -N_ERR_NOT_READY) {
+            if (!f->blocking) {
+                return fail(r);
+            }
+            if (interruptible) {
+                if (wait_receivable(f->handle) < 0) {
+                    return -1;
+                }
+                continue;
+            }
+            /* 閉じた後も残ったメッセージは受けられる：待ちが closed なら受けて確かめる */
+            if (console) {
+                _PyOS_NocturneWait(f->handle, N_EVENT_RECEIVABLE | N_EVENT_CLOSED, NULL, 0, N_CLOCK_NEVER);
+            }
+            else {
+                r = n_channel_wait((n_channel){f->handle}, N_CLOCK_NEVER);
+                if (r < 0 && r != -N_ERR_CLOSED) {
+                    return fail(r);
+                }
             }
             continue;
         }
-        if (r == -KABI_ERR_TOO_LARGE && f->kind != KABI_KIND_CONSOLE) {
-            n_result size = n_channel_receive(f->handle, NULL, 0, KABI_CHANNEL_PEEK, NULL);
-            if (size < 0) {
-                return fail(size);
-            }
-            char *message = PyMem_RawMalloc((size_t)size);
+        if (r < 0) {
+            return fail(r);
+        }
+        if (!console && (size_t)r > count) {
+            /* 場所より大きいメッセージは受けずに大きさが返る：持つ場所へ受け、残りを pending に回す */
+            char *message = PyMem_RawMalloc((size_t)r);
             if (message == NULL) {
                 errno = ENOMEM;
                 return -1;
             }
-            r = n_channel_receive(f->handle, message, (size_t)size, 0, NULL);
+            r = n_channel_receive((n_channel){f->handle}, (uint8_t *)message, (size_t)r, &attached, 0);
             if (r < 0) {
                 PyMem_RawFree(message);
                 return fail(r);
             }
+            drop_attached(attached);
             f->pending = message;
             f->pending_at = 0;
             f->pending_end = (size_t)r;
             return (Py_ssize_t)take_pending(f, buf, count);
-        }
-        if (r < 0) {
-            return fail(r);
         }
         return (Py_ssize_t)r;
     }
@@ -604,10 +680,10 @@ _Py_terminal_line(const char *prompt, char *buf, size_t size)
     assert(size >= 2);
     PyMutex_Lock(&terminal_lock);
     _PyOS_NocturneInterruptsPause();
-    int n = n_line_read(prompt, buf, size - 1, 0, NULL);
+    n_result n = n_line_read(prompt, strlen(prompt), buf, size - 2, 0, NULL, NULL);
     _PyOS_NocturneInterruptsResume();
     PyMutex_Unlock(&terminal_lock);
-    if (n == N_LINE_INTERRUPTED) {
+    if (n == -N_ERR_CANCELLED) {
         raise(SIGINT);
         errno = EINTR;
         return -1;
@@ -615,13 +691,15 @@ _Py_terminal_line(const char *prompt, char *buf, size_t size)
     if (n < 0) {
         return 0;
     }
+    if ((size_t)n > size - 2) {
+        n = (n_result)(size - 2);  /* 長すぎる行は場所に入った分 */
+    }
     buf[n] = '\n';
     buf[n + 1] = '\0';
-    return n + 1;
+    return (Py_ssize_t)n + 1;
 }
 
-/* A line typed at the terminal, the part that fits buf and the rest kept as
-   pending. Called with f's lock. */
+/* 端末で打った行の buf に入る部分。残りは pending に持つ。f の錠を持って呼ぶ。 */
 static Py_ssize_t
 read_terminal(struct open_file *f, char *buf, size_t count)
 {
@@ -656,7 +734,7 @@ _Py_fd_read(int fd, void *buf, size_t count)
     else if (count == 0) {
         r = 0;
     }
-    else if (f->kind == KABI_KIND_TCP || f->kind == KABI_KIND_UDP) {
+    else if (f->kind == N_KIND_TCP || f->kind == N_KIND_UDP) {
         r = read_socket(f, buf, count);
     }
     else {
@@ -664,8 +742,8 @@ _Py_fd_read(int fd, void *buf, size_t count)
         if (f->pending != NULL) {
             r = (Py_ssize_t)take_pending(f, buf, count);
         }
-        else if (f->kind == KABI_KIND_DOCUMENT) {
-            n_result got = n_document_read_at(f->handle, f->position, buf, count);
+        else if (f->kind == N_KIND_DOCUMENT) {
+            n_result got = n_document_read_at((n_document){f->handle}, f->position, (uint8_t *)buf, count);
             if (got > 0) {
                 f->position += (uint64_t)got;
             }
@@ -683,30 +761,31 @@ _Py_fd_read(int fd, void *buf, size_t count)
     return r;
 }
 
-/* ---- writing ---- */
+/* ---- 書き ---- */
 
-/* All of buf at the document's position, or at its end for an appending one.
-   Called with f's lock. */
+/* buf の全部を文書の位置へ、足す形の文書は終わりへ書く。f の錠を持って呼ぶ。 */
 static Py_ssize_t
 write_document(struct open_file *f, const char *buf, size_t count)
 {
+    n_document document = {f->handle};
     bool claimed = false;
     if (f->append) {
-        /* the claim keeps other appenders from writing at the same end */
-        claimed = n_document_claim(f->handle, KABI_CLAIM_EXCLUSIVE, true) == 0;
-        n_result size = n_document_size(f->handle);
-        if (size < 0) {
+        /* 錠が、足すほかの者を同じ終わりに書かせない */
+        claimed = n_document_claim(document, 0, N_DOCUMENT_WHOLE, N_DOCUMENT_CLAIM_KIND_EXCLUSIVE, 1) == 0;
+        uint64_t size = 0;
+        n_result r = n_document_size(document, &size);
+        if (r < 0) {
             if (claimed) {
-                n_document_release(f->handle);
+                n_document_release(document, 0, N_DOCUMENT_WHOLE);
             }
-            return fail(size);
+            return fail(r);
         }
-        f->position = (uint64_t)size;
+        f->position = size;
     }
     size_t done = 0;
     n_result r = 0;
     while (done < count) {
-        r = n_document_write_at(f->handle, f->position, buf + done, count - done);
+        r = n_document_write_at(document, f->position, (const uint8_t *)buf + done, count - done);
         if (r <= 0) {
             break;
         }
@@ -714,7 +793,7 @@ write_document(struct open_file *f, const char *buf, size_t count)
         f->position += (uint64_t)r;
     }
     if (claimed) {
-        n_document_release(f->handle);
+        n_document_release(document, 0, N_DOCUMENT_WHOLE);
     }
     if (done == 0 && r < 0) {
         return fail(r);
@@ -722,29 +801,28 @@ write_document(struct open_file *f, const char *buf, size_t count)
     return (Py_ssize_t)done;
 }
 
-/* A prefix of buf onto a TCP stream, waiting for room as a blocking write
-   does (Ctrl+C ends the wait on the main thread). A UDP socket's descriptor
-   has no address to send to. */
+/* buf の頭を TCP の流れへ、止まる書きと同じく空きを待って書く（主のスレッドでは Ctrl+C が待ちを終える）。UDP の
+   socket の記述子は送り先の住所を持たない。 */
 static Py_ssize_t
 write_socket(struct open_file *f, const char *buf, size_t count)
 {
-    n_handle h = __atomic_load_n(&f->handle, __ATOMIC_ACQUIRE);
+    int32_t h = __atomic_load_n(&f->handle, __ATOMIC_ACQUIRE);
     if (h < 0) {
         errno = ENOTCONN;
         return -1;
     }
-    if (f->kind == KABI_KIND_UDP) {
+    if (f->kind == N_KIND_UDP) {
         errno = EDESTADDRREQ;
         return -1;
     }
     for (;;) {
         bool interruptible = f->blocking && _PyOS_NocturneInterruptible();
         n_result r = f->blocking && !interruptible
-            ? tcp_send_until(h, buf, count, KABI_CLOCK_NEVER)
-            : tcp_send_some(h, buf, count);
-        if (r == -KABI_ERR_NOT_READY && interruptible) {
-            if (_PyOS_NocturneWait(h, KABI_EVENT_SENDABLE | KABI_EVENT_CLOSED, NULL, 0,
-                                   KABI_CLOCK_NEVER) < 0) {
+            ? n_tcp_send_until((n_tcp){h}, (const uint8_t *)buf, count, 0, N_CLOCK_NEVER, NULL, 0)
+            : n_tcp_send((n_tcp){h}, (const uint8_t *)buf, count, 0);
+        if (r == -N_ERR_NOT_READY && interruptible) {
+            if (_PyOS_NocturneWait(h, N_EVENT_SENDABLE | N_EVENT_CLOSED, NULL, 0,
+                                   N_CLOCK_NEVER) < 0) {
                 errno = EINTR;
                 return -1;
             }
@@ -766,25 +844,24 @@ _Py_fd_write(int fd, const void *buf, size_t count)
         errno = EBADF;
         r = -1;
     }
-    else if (f->kind == KABI_KIND_DOCUMENT) {
+    else if (f->kind == N_KIND_DOCUMENT) {
         PyMutex_Lock(&f->lock);
         r = write_document(f, buf, count);
         PyMutex_Unlock(&f->lock);
     }
-    else if (f->kind == KABI_KIND_TCP || f->kind == KABI_KIND_UDP) {
+    else if (f->kind == N_KIND_TCP || f->kind == N_KIND_UDP) {
         r = write_socket(f, buf, count);
     }
     else {
-        /* one send is one message; the send waits while the reader is far
-           behind (docs/nocturne-native-abi.md §4) */
-        n_result sent = n_channel_send(f->handle, buf, count, -1);
-        r = sent < 0 ? fail(sent) : (Py_ssize_t)sent;
+        /* 一つの送りが一つのメッセージ。読む側が遠く遅れている間、送りは待つ（docs/nocturne-native-abi.md §4） */
+        n_result sent = n_channel_send((n_channel){f->handle}, buf, count, (n_handle){-1});
+        r = sent < 0 ? fail(sent) : (Py_ssize_t)count;
     }
     open_file_put(f);
     return r;
 }
 
-/* ---- documents ---- */
+/* ---- 文書 ---- */
 
 long long
 _Py_fd_seek(int fd, long long offset, int whence)
@@ -794,7 +871,7 @@ _Py_fd_seek(int fd, long long offset, int whence)
         return -1;
     }
     long long r = -1;
-    if (f->kind != KABI_KIND_DOCUMENT) {
+    if (f->kind != N_KIND_DOCUMENT) {
         errno = ESPIPE;
         goto done;
     }
@@ -807,10 +884,11 @@ _Py_fd_seek(int fd, long long offset, int whence)
         base = (long long)f->position;
     }
     else if (whence == SEEK_END) {
-        n_result size = n_document_size(f->handle);
-        base = size;
-        if (size < 0) {
-            fail(size);
+        uint64_t size = 0;
+        n_result got = n_document_size((n_document){f->handle}, &size);
+        base = got < 0 ? -1 : (long long)size;
+        if (got < 0) {
+            fail(got);
         }
     }
     else {
@@ -849,14 +927,14 @@ _Py_fd_truncate(int fd, long long size)
         r = -1;
     }
     else {
-        n_result set = n_document_set_size(f->handle, (uint64_t)size);
+        n_result set = n_document_set_size((n_document){f->handle}, (uint64_t)size);
         r = set < 0 ? fail(set) : 0;
     }
     open_file_put(f);
     return r;
 }
 
-/* The document's content on the medium. */
+/* 文書の中身を媒体に載せる。 */
 int
 _Py_fd_sync(int fd)
 {
@@ -865,8 +943,8 @@ _Py_fd_sync(int fd)
         return -1;
     }
     int r = 0;
-    if (f->kind == KABI_KIND_DOCUMENT) {
-        n_result committed = n_document_commit(f->handle, KABI_COMMIT_WAIT);
+    if (f->kind == N_KIND_DOCUMENT) {
+        n_result committed = n_document_commit((n_document){f->handle}, N_DOCUMENT_COMMIT_KIND_WAIT);
         r = committed < 0 ? fail(committed) : 0;
     }
     else {
@@ -885,9 +963,9 @@ _Py_fd_stat(int fd, struct _Py_stat_struct *status)
         return -1;
     }
     int r = 0;
-    if (f->kind == KABI_KIND_DOCUMENT) {
-        struct kabi_entry entry;
-        n_result info = n_document_info(f->handle, &entry);
+    if (f->kind == N_KIND_DOCUMENT) {
+        struct n_entry entry = {.bytes = sizeof entry};
+        n_result info = n_document_info((n_document){f->handle}, &entry);
         if (info < 0) {
             r = fail(info);
         }
@@ -897,8 +975,8 @@ _Py_fd_stat(int fd, struct _Py_stat_struct *status)
     }
     else {
         memset(status, 0, sizeof *status);
-        status->st_mode = f->terminal || f->kind == KABI_KIND_CONSOLE ? S_IFCHR | 0666
-                          : f->kind == KABI_KIND_TCP || f->kind == KABI_KIND_UDP ? S_IFSOCK | 0666
+        status->st_mode = f->terminal || f->kind == N_KIND_CONSOLE ? S_IFCHR | 0666
+                          : f->kind == N_KIND_TCP || f->kind == N_KIND_UDP ? S_IFSOCK | 0666
                           : S_IFIFO | 0666;
         status->st_nlink = 1;
     }
@@ -913,7 +991,7 @@ _Py_fd_isatty(int fd)
     if (f == NULL) {
         return -1;
     }
-    int r = f->terminal || f->kind == KABI_KIND_CONSOLE || n_terminal(f->handle);
+    int r = f->terminal || f->kind == N_KIND_CONSOLE || (f->handle >= 0 && n_terminal((n_handle){f->handle}));
     open_file_put(f);
     return r;
 }

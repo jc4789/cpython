@@ -1,28 +1,20 @@
-/* _multiprocessing: multiprocessing's native half on Nocturne (ports/cpython/README.md).
+/* _multiprocessing：Nocturne の上の multiprocessing のネイティブの半分（ports/cpython/README.md）。
 
-   multiprocessing starts each process as an app of its own (n_app_launch,
-   Lib/multiprocessing/popen_spawn_nocturne.py) and hands it the handles it
-   inherits in the launch's table (docs/nocturne-native-abi.md §5). What
-   processes share is made of the system's own objects:
+   multiprocessing は各プロセスを一つのアプリとして起動し（n_app_launch、Lib/multiprocessing/popen_spawn_nocturne.py）、
+   受け継ぐハンドルを起動の表で渡す（docs/nocturne-native-abi.md §5）。プロセスが分け合うものは系のオブジェクトで作る：
 
-   - SemLock: a semaphore word on a page of shared memory (§7). acquire takes
-     the word down with an atomic exchange and sleeps on it with an address
-     wait, which works across apps on shared pages; release raises it and
-     wakes one sleeper. The page's handle is what a child inherits.
-   - Shared: pages of shared memory as a writable buffer, for multiprocessing
-     .heap's arenas (Value, Array, sharedctypes).
-   - channel_send and channel_receive: a Connection's messages are a channel's
-     messages (§4), so their boundaries are the system's. Handles a pickled
-     object holds travel as attachments, one each on an empty message before
-     the body: a body never carries one, an empty message with an attachment
-     is never a body.
-   - wait: multiprocessing.connection.wait over the system's event queues
-     (§6): a channel or a TCP connection is ready when it reports
-     KABI_EVENT_RECEIVABLE or KABI_EVENT_CLOSED, an app (a Process's sentinel) when
-     it reports KABI_EVENT_APP_ENDED.
+   - SemLock：共有のページ（§7）の上のセマフォの語。acquire は原子の交換で語を下げ、番地の待ちで眠る（共有のページでは
+     アプリをまたいで効く）。release は語を上げ、眠る者を一つ起こす。子が受け継ぐのはページのハンドル。
+   - Shared：書ける buffer としての共有のページ。multiprocessing.heap のアリーナ（Value、Array、sharedctypes）。
+   - channel_send と channel_receive：Connection のメッセージはチャネルのメッセージ（§4）なので、区切りは系のもの。
+     pickle したオブジェクトが持つハンドルは、本体の前の空のメッセージに一つずつ添えて渡る：本体は添え物を持たず、
+     添え物を持つ空のメッセージは本体でない。
+   - wait：系のイベントキュー（§6）の上の multiprocessing.connection.wait。チャネルか TCP の接続は N_EVENT_RECEIVABLE
+     か N_EVENT_CLOSED を知らせれば、アプリ（Process の sentinel）は N_EVENT_APP_ENDED を知らせれば用意ができている。
 
-   On the main thread Ctrl+C ends a wait, Python runs its SIGINT handler, and
-   the wait goes on to the same deadline unless the handler raised (PEP 475). */
+   主のスレッドでは Ctrl+C が待ちを終え、Python が SIGINT の handler を走らせ、handler が例外を起こさなければ同じ
+   締め切りまで待ち続ける（PEP 475）。ハンドルは契約のハンドルの番号（int32_t）で持ち、契約の関数へは種類の構造体で
+   渡す。 */
 #include "Python.h"
 #include "pycore_signal.h"        // _PyOS_NocturneWait()
 #include "pycore_time.h"          // _PyTime_FromSecondsObject()
@@ -33,7 +25,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* These match the enum in Lib/multiprocessing/synchronize.py. */
+/* Lib/multiprocessing/synchronize.py の列挙と同じ。 */
 enum { RECURSIVE_MUTEX, SEMAPHORE };
 
 typedef struct {
@@ -54,13 +46,12 @@ raise_result(n_result r)
     return PyErr_SetFromErrno(PyExc_OSError);
 }
 
-/* A deadline on the monotonic clock from a timeout in seconds (None: never).
-   0, or -1 with an exception. A negative timeout is 0, as Python's own
-   semaphores and waits take it. */
+/* 秒の timeout（None は無し）からの単調時計の締め切り。0 か、例外つきの -1。負の timeout は、Python 自身の
+   セマフォと待ちと同じく 0。 */
 static int
 deadline_of(PyObject *timeout, uint64_t *deadline)
 {
-    *deadline = KABI_CLOCK_NEVER;
+    *deadline = N_CLOCK_NEVER;
     if (timeout == Py_None) {
         return 0;
     }
@@ -74,11 +65,9 @@ deadline_of(PyObject *timeout, uint64_t *deadline)
 
 /* ---- SemLock ---- */
 
-/* The page a semaphore lives on. value is the semaphore; waiters counts the
-   threads of every app that are about to sleep on it, so that a release
-   wakes only when someone sleeps. Both are read and written with sequential
-   consistency: a waiter raises waiters and then reads value, a release
-   raises value and then reads waiters, so one of the two sees the other. */
+/* セマフォのあるページ。value がセマフォで、waiters はそれで眠ろうとしているどのアプリのスレッドも数える：release は
+   誰かが眠る時だけ起こす。どちらも逐次一貫で読み書きする：待つ者は waiters を上げてから value を読み、release は
+   value を上げてから waiters を読むので、どちらかがもう片方を見る。 */
 struct semaphore_page {
     uint32_t value;
     uint32_t waiters;
@@ -86,10 +75,10 @@ struct semaphore_page {
 
 typedef struct {
     PyObject_HEAD
-    n_handle handle;                  /* the shared object of the page */
+    int32_t handle;                   /* ページの共有のオブジェクト */
     struct semaphore_page *page;
     unsigned long last_tid;
-    int count;                        /* this process's acquires minus releases */
+    int count;                        /* このプロセスの acquire から release を引いた数 */
     int maxvalue;
     int kind;
 } SemLockObject;
@@ -108,20 +97,19 @@ semaphore_take(struct semaphore_page *page)
     return false;
 }
 
-/* A waiter that leaves without taking while the word is up hands the wake it
-   may have had to the next sleeper, so that no release goes unanswered. */
+/* 語が上がっている間に取らずに去る待つ者は、受けたかもしれない起こしを次の眠る者へ渡す：答えの無い release を
+   残さない。 */
 static void
 semaphore_pass_on(struct semaphore_page *page)
 {
     if (__atomic_load_n(&page->value, __ATOMIC_SEQ_CST) > 0 &&
         __atomic_load_n(&page->waiters, __ATOMIC_SEQ_CST) > 0) {
-        wake_address(&page->value, 1);
+        n_wake_address((size_t)&page->value, 1);
     }
 }
 
-/* Takes the semaphore until deadline: 1 taken, 0 the deadline, -1 with an
-   exception (SIGINT's handler raised). Each pass either takes the word, ends
-   at the deadline, or sleeps until a release changes the word. */
+/* 締め切りまでセマフォを取る：1 は取った、0 は締め切り、-1 は例外つき（SIGINT の handler が起こした）。一周ごとに、
+   語を取るか、締め切りで終わるか、release が語を変えるまで眠る。 */
 static int
 semaphore_wait(struct semaphore_page *page, uint64_t deadline)
 {
@@ -209,7 +197,7 @@ semlock_release(PyObject *op, PyObject *Py_UNUSED(ignored))
         }
     } while (!__atomic_compare_exchange_n(&page->value, &v, v + 1, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST));
     if (__atomic_load_n(&page->waiters, __ATOMIC_SEQ_CST) > 0) {
-        wake_address(&page->value, 1);
+        n_wake_address((size_t)&page->value, 1);
     }
     --self->count;
     Py_RETURN_NONE;
@@ -268,22 +256,21 @@ semlock_after_fork(PyObject *op, PyObject *Py_UNUSED(ignored))
     Py_RETURN_NONE;
 }
 
-/* A SemLock over the page of handle, which it then owns. */
+/* handle のページの上の SemLock。ハンドルはそれが持つ。 */
 static PyObject *
-semlock_over(PyTypeObject *type, n_handle handle, int kind, int maxvalue)
+semlock_over(PyTypeObject *type, int32_t handle, int kind, int maxvalue)
 {
-    void *mapping = NULL;
-    n_result r = n_shared_map(handle, KABI_PAGE_SIZE, KABI_MEMORY_READ_WRITE, &mapping);
-    if (r < 0) {
-        return raise_result(r);
+    n_result mapping = n_shared_map((n_shared){handle}, N_PAGE_BYTES, N_MEMORY_ACCESS_READ_WRITE);
+    if (mapping < 0) {
+        return raise_result(mapping);
     }
     SemLockObject *self = (SemLockObject *)type->tp_alloc(type, 0);
     if (self == NULL) {
-        n_memory_release(mapping, KABI_PAGE_SIZE);
+        n_memory_release((size_t)mapping, N_PAGE_BYTES);
         return NULL;
     }
     self->handle = handle;
-    self->page = mapping;
+    self->page = (struct semaphore_page *)(size_t)mapping;
     self->kind = kind;
     self->maxvalue = maxvalue;
     return (PyObject *)self;
@@ -303,7 +290,7 @@ semlock_check(int kind, int maxvalue)
     return 0;
 }
 
-/* SemLock(kind, value, maxvalue): a new semaphore on a page of its own. */
+/* SemLock(kind, value, maxvalue)：自分のページの上の新しいセマフォ。 */
 static PyObject *
 semlock_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
@@ -319,21 +306,22 @@ semlock_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
         PyErr_SetString(PyExc_ValueError, "invalid value");
         return NULL;
     }
-    n_handle handle = n_shared_create(KABI_PAGE_SIZE);
-    if (handle < 0) {
-        return raise_result(handle);
+    n_shared shared;
+    n_result created = n_shared_create(N_PAGE_BYTES, &shared);
+    if (created < 0) {
+        return raise_result(created);
     }
-    PyObject *self = semlock_over(type, handle, kind, maxvalue);
+    PyObject *self = semlock_over(type, shared.handle, kind, maxvalue);
     if (self == NULL) {
-        n_handle_close(handle);
+        n_handle_close((n_handle){shared.handle});
         return NULL;
     }
     __atomic_store_n(&((SemLockObject *)self)->page->value, (uint32_t)value, __ATOMIC_SEQ_CST);
     return self;
 }
 
-/* _rebuild(handle, kind, maxvalue, name): the SemLock a spawned process
-   inherited; handle is its number in the launch's table, name None. */
+/* _rebuild(handle, kind, maxvalue, name)：起動したプロセスが受け継いだ SemLock。handle は起動の表の中の番号、name は
+   None。 */
 static PyObject *
 semlock_rebuild(PyObject *cls, PyObject *args)
 {
@@ -359,10 +347,10 @@ semlock_dealloc(PyObject *op)
     PyTypeObject *tp = Py_TYPE(self);
     PyObject_GC_UnTrack(self);
     if (self->page != NULL) {
-        n_memory_release(self->page, KABI_PAGE_SIZE);
+        n_memory_release((size_t)self->page, N_PAGE_BYTES);
     }
     if (self->handle >= 0) {
-        n_handle_close(self->handle);
+        n_handle_close((n_handle){self->handle});
     }
     tp->tp_free(self);
     Py_DECREF(tp);
@@ -439,14 +427,14 @@ static PyType_Spec semlock_spec = {
 
 typedef struct {
     PyObject_HEAD
-    n_handle handle;
+    int32_t handle;
     void *mapping;
-    Py_ssize_t size;                  /* the bytes the buffer shows */
-    size_t mapped;                    /* size in whole pages */
+    Py_ssize_t size;                  /* buffer が見せるバイト */
+    size_t mapped;                    /* 頁の倍数の大きさ */
 } SharedObject;
 
-/* Shared(size, handle=-1): size bytes of shared pages, new or (handle) the
-   ones a spawned process inherited, whose handle it then owns. */
+/* Shared(size, handle=-1)：size バイトの共有のページ。新しく作るか、（handle）起動したプロセスが受け継いだもので、
+   そのハンドルはこれが持つ。 */
 static PyObject *
 shared_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
@@ -460,32 +448,33 @@ shared_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
         PyErr_SetString(PyExc_ValueError, "size must be positive");
         return NULL;
     }
-    size_t mapped = ((size_t)size + KABI_PAGE_SIZE - 1) & ~(size_t)(KABI_PAGE_SIZE - 1);
+    size_t mapped = ((size_t)size + N_PAGE_BYTES - 1) & ~(size_t)(N_PAGE_BYTES - 1);
     bool created = handle < 0;
     if (created) {
-        handle = n_shared_create(mapped);
-        if (handle < 0) {
-            return raise_result(handle);
+        n_shared shared;
+        n_result r = n_shared_create(mapped, &shared);
+        if (r < 0) {
+            return raise_result(r);
         }
+        handle = shared.handle;
     }
-    void *mapping = NULL;
-    n_result r = n_shared_map(handle, mapped, KABI_MEMORY_READ_WRITE, &mapping);
-    if (r < 0) {
+    n_result mapping = n_shared_map((n_shared){handle}, mapped, N_MEMORY_ACCESS_READ_WRITE);
+    if (mapping < 0) {
         if (created) {
-            n_handle_close(handle);
+            n_handle_close((n_handle){handle});
         }
-        return raise_result(r);
+        return raise_result(mapping);
     }
     SharedObject *self = (SharedObject *)type->tp_alloc(type, 0);
     if (self == NULL) {
-        n_memory_release(mapping, mapped);
+        n_memory_release((size_t)mapping, mapped);
         if (created) {
-            n_handle_close(handle);
+            n_handle_close((n_handle){handle});
         }
         return NULL;
     }
     self->handle = handle;
-    self->mapping = mapping;
+    self->mapping = (void *)(size_t)mapping;
     self->size = size;
     self->mapped = mapped;
     return (PyObject *)self;
@@ -498,10 +487,10 @@ shared_dealloc(PyObject *op)
     PyTypeObject *tp = Py_TYPE(self);
     PyObject_GC_UnTrack(self);
     if (self->mapping != NULL) {
-        n_memory_release(self->mapping, self->mapped);
+        n_memory_release((size_t)self->mapping, self->mapped);
     }
     if (self->handle >= 0) {
-        n_handle_close(self->handle);
+        n_handle_close((n_handle){self->handle});
     }
     tp->tp_free(self);
     Py_DECREF(tp);
@@ -514,7 +503,7 @@ shared_traverse(PyObject *op, visitproc visit, void *arg)
     return 0;
 }
 
-/* A memoryview holds the object, so the pages stay mapped while one exists. */
+/* memoryview はオブジェクトを持つので、それがある間ページはマップされたまま。 */
 static int
 shared_getbuffer(PyObject *op, Py_buffer *view, int flags)
 {
@@ -557,23 +546,22 @@ static PyType_Spec shared_spec = {
     .slots = shared_slots,
 };
 
-/* ---- channels ---- */
+/* ---- チャネル ---- */
 
-/* channel_pair(): a new channel's two ends. */
+/* channel_pair()：新しいチャネルの両端。 */
 static PyObject *
 mp_channel_pair(PyObject *module, PyObject *Py_UNUSED(ignored))
 {
-    n_handle ends[2];
-    n_result r = n_channel_pair(ends);
+    n_channel one, other;
+    n_result r = n_channel_pair(&other, &one);
     if (r < 0) {
         return raise_result(r);
     }
-    return Py_BuildValue("(ii)", ends[0], ends[1]);
+    return Py_BuildValue("(ii)", one.handle, other.handle);
 }
 
-/* channel_send(handle, data, handles=()): one message of data, after one
-   empty message for each of the handles, which stay open here. The send waits
-   while the receiver holds 1 MiB it has not taken (§4). */
+/* channel_send(handle, data, handles=())：handles の一つごとに空のメッセージを送ってから、data を一つのメッセージで
+   送る。handles はここで開いたまま。受け手が取っていない 1 MiB を持つ間、送りは待つ（§4）。 */
 static PyObject *
 mp_channel_send(PyObject *module, PyObject *args)
 {
@@ -600,12 +588,12 @@ mp_channel_send(PyObject *module, PyObject *args)
             goto fail;
         }
         Py_BEGIN_ALLOW_THREADS
-        r = n_channel_send(channel, NULL, 0, carried);
+        r = n_channel_send((n_channel){channel}, NULL, 0, (n_handle){carried});
         Py_END_ALLOW_THREADS
     }
     if (r >= 0) {
         Py_BEGIN_ALLOW_THREADS
-        r = n_channel_send(channel, data.buf, (size_t)data.len, -1);
+        r = n_channel_send((n_channel){channel}, data.buf, (size_t)data.len, (n_handle){-1});
         Py_END_ALLOW_THREADS
     }
     Py_XDECREF(fast);
@@ -620,15 +608,14 @@ fail:
     return NULL;
 }
 
-/* Waits until the channel has a message or its other end has gone: 0, or -1
-   with an exception. */
+/* チャネルにメッセージが来るか、相手の端が無くなるまで待つ：0 か、例外つきの -1。 */
 static int
-channel_wait(n_handle channel)
+channel_wait(int32_t channel)
 {
     for (;;) {
         int woke;
         Py_BEGIN_ALLOW_THREADS
-        woke = _PyOS_NocturneWait(channel, KABI_EVENT_RECEIVABLE | KABI_EVENT_CLOSED, NULL, 0, KABI_CLOCK_NEVER);
+        woke = _PyOS_NocturneWait(channel, N_EVENT_RECEIVABLE | N_EVENT_CLOSED, NULL, 0, N_CLOCK_NEVER);
         Py_END_ALLOW_THREADS
         if (woke >= 0) {
             return 0;
@@ -639,10 +626,9 @@ channel_wait(n_handle channel)
     }
 }
 
-/* channel_receive(handle, maxsize=None): (data, handles), the next message
-   and the handles carried before it, waiting for one. data is None when the
-   message was longer than maxsize: it is dropped. EOFError when the other end
-   has gone and nothing is left. */
+/* channel_receive(handle, maxsize=None)：(data, handles)。次のメッセージと、その前に添えて渡ったハンドルで、来るまで
+   待つ。メッセージが maxsize より長ければ data は None で、メッセージは捨てる。相手の端が無くなり、何も残っていなければ
+   EOFError。 */
 static PyObject *
 mp_channel_receive(PyObject *module, PyObject *args)
 {
@@ -665,15 +651,15 @@ mp_channel_receive(PyObject *module, PyObject *args)
     for (;;) {
         n_result size;
         Py_BEGIN_ALLOW_THREADS
-        size = n_channel_receive(channel, NULL, 0, KABI_CHANNEL_PEEK, NULL);
+        size = n_channel_receive((n_channel){channel}, NULL, 0, NULL, N_CHANNEL_RECEIVE_OPTIONS_PEEK);
         Py_END_ALLOW_THREADS
-        if (size == -KABI_ERR_NOT_READY) {
+        if (size == -N_ERR_NOT_READY) {
             if (channel_wait(channel) < 0) {
                 goto fail;
             }
             continue;
         }
-        if (size == -KABI_ERR_CLOSED) {
+        if (size == -N_ERR_CLOSED) {
             PyErr_SetNone(PyExc_EOFError);
             goto fail;
         }
@@ -684,7 +670,7 @@ mp_channel_receive(PyObject *module, PyObject *args)
         if (size > maxsize) {
             n_result dropped;
             Py_BEGIN_ALLOW_THREADS
-            dropped = n_channel_receive(channel, NULL, 0, KABI_CHANNEL_DISCARD, NULL);
+            dropped = n_channel_receive((n_channel){channel}, NULL, 0, NULL, N_CHANNEL_RECEIVE_OPTIONS_DISCARD);
             Py_END_ALLOW_THREADS
             if (dropped < 0) {
                 raise_result(dropped);
@@ -696,19 +682,19 @@ mp_channel_receive(PyObject *module, PyObject *args)
         if (data == NULL) {
             goto fail;
         }
-        n_handle attached = -1;
+        n_handle attached = {-1};
         n_result got;
         Py_BEGIN_ALLOW_THREADS
-        got = n_channel_receive(channel, PyBytes_AS_STRING(data), (size_t)size, 0, &attached);
+        got = n_channel_receive((n_channel){channel}, (uint8_t *)PyBytes_AS_STRING(data), (size_t)size, &attached, 0);
         Py_END_ALLOW_THREADS
-        if (got == -KABI_ERR_TOO_LARGE || got == -KABI_ERR_NOT_READY) {
-            /* another thread took the message measured */
+        if (got == -N_ERR_NOT_READY || got > size) {
+            /* 測ったメッセージはほかのスレッドが取った（大きいメッセージは受けずに大きさが返る） */
             Py_DECREF(data);
             continue;
         }
         if (got < 0) {
             Py_DECREF(data);
-            if (got == -KABI_ERR_CLOSED) {
+            if (got == -N_ERR_CLOSED) {
                 PyErr_SetNone(PyExc_EOFError);
             }
             else {
@@ -716,9 +702,9 @@ mp_channel_receive(PyObject *module, PyObject *args)
             }
             goto fail;
         }
-        if (attached >= 0) {
+        if (attached.handle >= 0) {
             Py_DECREF(data);
-            PyObject *h = PyLong_FromLong(attached);
+            PyObject *h = PyLong_FromLong(attached.handle);
             if (h == NULL || PyList_Append(carried, h) < 0) {
                 Py_XDECREF(h);
                 n_handle_close(attached);
@@ -731,7 +717,7 @@ mp_channel_receive(PyObject *module, PyObject *args)
     }
 fail:
     for (Py_ssize_t i = 0; i < PyList_GET_SIZE(carried); i++) {
-        n_handle_close((n_handle)PyLong_AsLong(PyList_GET_ITEM(carried, i)));
+        n_handle_close((n_handle){(int32_t)PyLong_AsLong(PyList_GET_ITEM(carried, i))});
     }
     Py_DECREF(carried);
     return NULL;
@@ -740,15 +726,14 @@ fail:
 /* ---- wait ---- */
 
 struct waited {
-    PyObject *object;                 /* borrowed from the caller's sequence */
-    n_handle handle;                  /* -1: nothing to wait for */
+    PyObject *object;                 /* 呼び手の並びから借りる */
+    int32_t handle;                   /* -1 は待つものが無い */
     uint32_t interest;
-    uint32_t ready;                   /* KABI_EVENT_* */
+    uint32_t ready;                   /* N_EVENT_* */
 };
 
-/* The handles of the caller's sequence: 0, or -1 with an exception. Handles
-   are what they are; descriptors (Nocturne/descriptors.h) answer at once for
-   bytes they hold and wait for the rest on their handle. */
+/* 呼び手の並びのハンドル：0 か、例外つきの -1。ハンドルはそのまま。記述子（Nocturne/descriptors.h）は持つバイトに
+   すぐ答え、残りをそのハンドルで待つ。 */
 static int
 read_waited(bool descriptors, struct waited *out, Py_ssize_t n, PyObject *fast)
 {
@@ -758,23 +743,23 @@ read_waited(bool descriptors, struct waited *out, Py_ssize_t n, PyObject *fast)
         if (value == -1 && PyErr_Occurred()) {
             return -1;
         }
-        struct waited w = {.object = object, .handle = value, .interest = KABI_EVENT_RECEIVABLE | KABI_EVENT_CLOSED};
+        struct waited w = {.object = object, .handle = value, .interest = N_EVENT_RECEIVABLE | N_EVENT_CLOSED};
         if (descriptors) {
             int ready = _Py_fd_poll(value, &w.handle);
             if (ready < 0) {
                 PyErr_SetFromErrno(PyExc_OSError);
                 return -1;
             }
-            w.ready = (uint32_t)ready & (KABI_EVENT_RECEIVABLE | KABI_EVENT_CLOSED);
+            w.ready = (uint32_t)ready & (N_EVENT_RECEIVABLE | N_EVENT_CLOSED);
         }
         else {
-            n_result kind = n_handle_kind(value);
+            n_result kind = n_handle_kind((n_handle){value});
             if (kind < 0) {
                 raise_result(kind);
                 return -1;
             }
-            if (kind == KABI_KIND_APP) {
-                w.interest = KABI_EVENT_APP_ENDED;
+            if (kind == N_KIND_APP) {
+                w.interest = N_EVENT_APP_ENDED;
             }
         }
         out[i] = w;
@@ -794,8 +779,8 @@ ready_objects(const struct waited *list, Py_ssize_t from, Py_ssize_t to)
     return result;
 }
 
-/* wait(handles, descriptors, timeout=None): (ready handles, ready
-   descriptors), waiting until one is ready or timeout seconds pass. */
+/* wait(handles, descriptors, timeout=None)：(用意のできたハンドル, 用意のできた記述子)。どれかの用意ができるか、
+   timeout 秒が過ぎるまで待つ。 */
 static PyObject *
 mp_wait(PyObject *module, PyObject *args)
 {
@@ -811,15 +796,15 @@ mp_wait(PyObject *module, PyObject *args)
     PyObject *hfast = PySequence_Fast(handles_object, "handles must be a sequence");
     PyObject *dfast = hfast == NULL ? NULL : PySequence_Fast(descriptors_object, "descriptors must be a sequence");
     struct waited *list = NULL;
-    struct kabi_event *events = NULL;
-    n_handle queue = -1;
+    struct n_notification *events = NULL;
+    n_events queue = {-1};
     if (dfast == NULL) {
         goto done;
     }
     Py_ssize_t nh = PySequence_Fast_GET_SIZE(hfast), nd = PySequence_Fast_GET_SIZE(dfast);
     Py_ssize_t n = nh + nd;
     list = PyMem_New(struct waited, n > 0 ? n : 1);
-    events = PyMem_New(struct kabi_event, n + 1);
+    events = PyMem_New(struct n_notification, n + 1);
     if (list == NULL || events == NULL) {
         PyErr_NoMemory();
         goto done;
@@ -827,9 +812,10 @@ mp_wait(PyObject *module, PyObject *args)
     if (read_waited(false, list, nh, hfast) < 0 || read_waited(true, list + nh, nd, dfast) < 0) {
         goto done;
     }
-    queue = n_events_create();
-    if (queue < 0) {
-        raise_result(queue);
+    n_result created = n_events_create(&queue);
+    if (created < 0) {
+        queue.handle = -1;
+        raise_result(created);
         goto done;
     }
     bool ready_now = false;
@@ -838,26 +824,30 @@ mp_wait(PyObject *module, PyObject *args)
         if (list[i].handle < 0) {
             continue;
         }
-        n_result watched = n_events_watch(queue, list[i].handle, list[i].interest, (uint64_t)i);
+        n_result watched = n_events_watch(queue, (n_handle){list[i].handle}, list[i].interest, (uint64_t)i);
         if (watched < 0) {
             raise_result(watched);
             goto done;
         }
     }
-    /* what is ready now needs no wait for the rest */
+    /* 今用意のできたものがあれば、残りを待たない */
     uint64_t until = ready_now ? 0 : deadline;
     for (;;) {
-        long got;
+        n_result got;
         Py_BEGIN_ALLOW_THREADS
-        got = _PyOS_NocturneWaitEvents(queue, events, (unsigned long)(n + 1), until);
+        got = _PyOS_NocturneWaitEvents(queue, events, (size_t)(n + 1), until);
         Py_END_ALLOW_THREADS
-        if (got < 0) {
+        if (got == -N_ERR_CANCELLED) {
             if (PyErr_CheckSignals() < 0) {
                 goto done;
             }
             continue;
         }
-        for (long i = 0; i < got; i++) {
+        if (got < 0) {
+            raise_result(got);
+            goto done;
+        }
+        for (n_result i = 0; i < got; i++) {
             if (events[i].token < (uint64_t)n) {
                 list[events[i].token].ready |= events[i].events & list[events[i].token].interest;
             }
@@ -873,8 +863,8 @@ mp_wait(PyObject *module, PyObject *args)
         Py_XDECREF(ready_handles);
     }
 done:
-    if (queue >= 0) {
-        n_handle_close(queue);
+    if (queue.handle >= 0) {
+        n_handle_close((n_handle){queue.handle});
     }
     PyMem_Free(list);
     PyMem_Free(events);
@@ -923,8 +913,8 @@ mp_exec(PyObject *module)
     if (flags == NULL || PyModule_Add(module, "flags", flags) < 0) {
         return -1;
     }
-    /* the granule of shared memory and its mappings (multiprocessing.heap) */
-    return PyModule_AddIntConstant(module, "PAGESIZE", (long)KABI_PAGE_SIZE);
+    /* 共有の記憶とそのマップの単位（multiprocessing.heap） */
+    return PyModule_AddIntConstant(module, "PAGESIZE", (long)N_PAGE_BYTES);
 }
 
 static int
