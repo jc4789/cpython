@@ -2,7 +2,7 @@
 
    標準ライブラリーの C のモジュールは全部ここにあり、ports/cpython/build.py が
    ソースを組む（ほかの拡張モジュールは .NLIB のライブラリーとして読み込む：
-   Python/dynload_nocturne.c）。nocturne is the os module's own (Nocturne/nocturnemodule.c),
+   Python/dynload_nocturne.c）。_nocturne is the os module's own (Nocturne/nocturnemodule.c),
    as nt is on Windows and posix elsewhere; zlib is over the system's DEFLATE
    codec (Nocturne/zlibmodule.c), _socket over its TCP and UDP
    (Nocturne/socketmodule.c), select over its event queues
@@ -78,7 +78,7 @@ extern PyObject* PyInit_faulthandler(void);
 extern PyObject* PyInit_gc(void);
 extern PyObject* PyInit_itertools(void);
 extern PyObject* PyInit_math(void);
-extern PyObject* PyInit_nocturne(void);
+extern PyObject* PyInit__nocturne(void);
 extern PyObject* PyInit_pyexpat(void);
 extern PyObject* PyInit__socket(void);
 extern PyObject* PyInit__ssl(void);
@@ -90,7 +90,7 @@ extern PyObject* PyMarshal_Init(void);
 extern PyObject* _PyWarnings_Init(void);
 
 struct _inittab _PyImport_Inittab[] = {
-    {"nocturne", PyInit_nocturne},
+    {"_nocturne", PyInit__nocturne},
 
     {"_abc", PyInit__abc},
     {"_asyncio", PyInit__asyncio},

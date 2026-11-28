@@ -1,7 +1,7 @@
 r"""OS routines for NT, Posix or Nocturne depending on what system we're on.
 
 This exports:
-  - all functions from posix, nt or nocturne, e.g. unlink, stat, etc.
+  - all functions from posix, nt or _nocturne, e.g. unlink, stat, etc.
   - os.path is posixpath, ntpath or nocturnepath
   - os.name is 'posix', 'nt' or 'nocturne'
   - os.curdir is a string representing the current directory (always '.')
@@ -102,19 +102,21 @@ elif 'nt' in _names:
     except ImportError:
         pass
 
-elif 'nocturne' in _names:
+elif '_nocturne' in _names:
+    # os のモジュールは _nocturne：名前 nocturne は Nocturne の契約のバインディングの
+    # パッケージ（nocturne.core など）。
     name = 'nocturne'
     linesep = '\n'
-    from nocturne import *
-    from nocturne import _exit
+    from _nocturne import *
+    from _nocturne import _exit
     __all__.append('_exit')
     import nocturnepath as path
 
-    import nocturne
-    __all__.extend(_get_exports_list(nocturne))
-    del nocturne
+    import _nocturne
+    __all__.extend(_get_exports_list(_nocturne))
+    del _nocturne
 
-    from nocturne import _have_functions
+    from _nocturne import _have_functions
 
 else:
     raise ImportError('no os specific module found')

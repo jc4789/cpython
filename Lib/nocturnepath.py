@@ -183,7 +183,7 @@ def expanduser(path):
         tilde = '~'
     if not path.startswith(tilde) or (path[1:2] and path[1:2] not in seps):
         return path
-    from nocturne import _user_folder
+    from _nocturne import _user_folder
     userhome = _user_folder()
     if isinstance(path, bytes):
         userhome = os.fsencode(userhome)

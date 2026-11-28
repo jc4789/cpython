@@ -1,5 +1,6 @@
-/* nocturne: the os module's own module on Nocturne, as nt is on Windows and
-   posix elsewhere (ports/cpython/README.md).
+/* _nocturne: the os module's own module on Nocturne, as nt is on Windows and
+   posix elsewhere (ports/cpython/README.md). 名前 nocturne は Nocturne の契約の
+   バインディングのパッケージ（Lib\nocturne）。
 
    Lib/os.py takes its functions from here, Lib/nocturnepath.py is os.path and
    Lib/subprocess.py launches apps with _launch. The functions speak of
@@ -1299,7 +1300,7 @@ static PyType_Slot DirEntry_slots[] = {
 };
 
 static PyType_Spec DirEntry_spec = {
-    .name = "nocturne.DirEntry",
+    .name = "_nocturne.DirEntry",
     .basicsize = sizeof(DirEntry),
     .flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION | Py_TPFLAGS_IMMUTABLETYPE,
     .slots = DirEntry_slots,
@@ -1451,7 +1452,7 @@ static PyType_Slot ScandirIterator_slots[] = {
 };
 
 static PyType_Spec ScandirIterator_spec = {
-    .name = "nocturne.ScandirIterator",
+    .name = "_nocturne.ScandirIterator",
     .basicsize = sizeof(ScandirIterator),
     .flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION | Py_TPFLAGS_IMMUTABLETYPE,
     .slots = ScandirIterator_slots,
@@ -2334,7 +2335,7 @@ static PyModuleDef_Slot nocturne_slots[] = {
 
 static struct PyModuleDef nocturnemodule = {
     PyModuleDef_HEAD_INIT,
-    .m_name = "nocturne",
+    .m_name = "_nocturne",
     .m_doc = "What Lib/os.py takes from Nocturne: C:, descriptors, apps and the environment.",
     .m_size = sizeof(nocturne_state),
     .m_methods = nocturne_methods,
@@ -2345,7 +2346,7 @@ static struct PyModuleDef nocturnemodule = {
 };
 
 PyMODINIT_FUNC
-PyInit_nocturne(void)
+PyInit__nocturne(void)
 {
     return PyModuleDef_Init(&nocturnemodule);
 }

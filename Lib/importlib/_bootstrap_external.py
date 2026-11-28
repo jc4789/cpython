@@ -39,7 +39,7 @@ if _MS_WINDOWS:
     except ImportError:
         winreg = None
 elif _NOCTURNE:
-    import nocturne as _os
+    import _nocturne as _os
 else:
     import posix as _os
 

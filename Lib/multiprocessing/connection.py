@@ -35,7 +35,7 @@ except ImportError:
     _winapi = None
 
 if sys.platform == 'nocturne':
-    import nocturne
+    import _nocturne as nocturne
 
 #
 #

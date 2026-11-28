@@ -107,7 +107,7 @@ if _mswindows:
                     "CREATE_NO_WINDOW", "DETACHED_PROCESS",
                     "CREATE_DEFAULT_ERROR_MODE", "CREATE_BREAKAWAY_FROM_JOB"])
 elif _nocturne:
-    import nocturne
+    import _nocturne as nocturne
 else:
     if _can_fork_exec:
         from _posixsubprocess import fork_exec as _fork_exec

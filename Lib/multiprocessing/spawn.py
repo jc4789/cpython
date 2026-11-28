@@ -115,7 +115,7 @@ def spawn_main(pipe_handle, parent_pid=None, tracker_fd=None, parent_handle=None
         fd = msvcrt.open_osfhandle(new_handle, os.O_RDONLY)
         parent_sentinel = source_process
     elif sys.platform == 'nocturne':
-        import nocturne
+        import _nocturne as nocturne
         # pipe_handle and parent_handle are the child's own handles, put in
         # its table by the launch (popen_spawn_nocturne): the channel its
         # launcher writes to, and the launcher's app, which reports its end.

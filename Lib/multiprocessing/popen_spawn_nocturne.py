@@ -6,7 +6,7 @@
 
 import io
 import os
-import nocturne
+import _nocturne as nocturne
 import _multiprocessing
 
 from .context import reduction, get_spawning_popen, set_spawning_popen

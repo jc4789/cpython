@@ -178,7 +178,7 @@ def _candidate_tempdir_list():
                          r'c:\temp', r'c:\tmp', r'\temp', r'\tmp' ])
     elif _os.name == 'nocturne':
         # the temporary folder of the user this app runs for
-        from nocturne import _temp_folder
+        from _nocturne import _temp_folder
         dirlist.append(_temp_folder())
     else:
         dirlist.extend([ '/tmp', '/var/tmp', '/usr/tmp' ])

@@ -147,7 +147,7 @@ elif sys.platform == 'nocturne':
     # and sending one message, and receiving and unpickling one, happen on
     # one thread: _carried is per thread.
     __all__ += ['DupHandle']
-    import nocturne
+    import _nocturne as nocturne
     import threading
 
     _carried = threading.local()
